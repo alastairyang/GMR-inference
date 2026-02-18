@@ -162,14 +162,12 @@ def sample_from_spatial_cov(H, x, y, mask, mean=None, sigma_op=None,
         H_weight[~mask.flatten().astype(bool)] = 0.0
 
     n = sigma_op.shape[0]
-    
-    # Handle mean vector
     if mean is not None:
         mean = mean.flatten()
     else:
         mean = np.zeros(n)
 
-    # 2. Estimate Trace (Optional, for stats)
+    # Estimate Trace
     if verbose:
         print("\nEstimating total variance (trace)...")
         num_probes = 20
@@ -181,7 +179,7 @@ def sample_from_spatial_cov(H, x, y, mask, mean=None, sigma_op=None,
         total_trace = np.mean(trace_estimates)
         print(f"Estimated total variance: {total_trace:.2e}")
 
-    # 3. Eigendecomposition (Lanczos)
+    # Eigendecomposition
     print(f"\nComputing top {rank} eigenvectors...")
     start_time = time.time()
     
@@ -200,7 +198,7 @@ def sample_from_spatial_cov(H, x, y, mask, mean=None, sigma_op=None,
     # Ensure positive eigenvalues (numerical noise floor)
     eigenvalues = np.maximum(eigenvalues, 1e-10)
     
-    # 4. Generate Samples
+    # Generate Samples
     if verbose: print(f"Generating {num_samples} samples...")
         
     z = np.random.randn(rank, num_samples)
@@ -210,51 +208,75 @@ def sample_from_spatial_cov(H, x, y, mask, mean=None, sigma_op=None,
     zero_mean_samples = eigenvectors @ (sqrt_Lambda[:, None] * z)
     samples = zero_mean_samples + mean[:, None]
     
-    # 5. Compute Log Probs
-    logprobs = compute_logprob(samples, mean, eigenvalues, eigenvectors, verbose=verbose)
-    
-    return samples, zero_mean_samples, logprobs
+    return samples, zero_mean_samples
 
-def compute_logprob(samples, mean, eigenvalues, eigenvectors, verbose=False):
-    """
-    Compute log probability for samples from low-rank approximation of N(mean, Sigma)
+def compute_conditional_expected_val(gmm, index, condition_val, sample_size=200):
+    Y_n_samples = condition_val.shape[1]
+    Y_n_dim = condition_val.shape[0]
     
+    X_n_dim = gmm.means.shape[1] - Y_n_dim
+    inner_samples_mean_sum = np.zeros(X_n_dim)  # Note: 1D array
+    
+    print(f"Propagating {Y_n_samples} samples")
+    
+    for i in range(Y_n_samples):
+        pred_gmm = gmm.condition(index, condition_val[:,i])
+        inner_samples = pred_gmm.sample(sample_size)  # Shape: (sample_size, X_n_dim)
+        
+        # Simply take the mean across samples
+        inner_samples_mean_sum += np.mean(inner_samples, axis=0)
+    
+    total_mean = inner_samples_mean_sum / Y_n_samples
+    return total_mean
+
+def compute_conditional_std_val_latent(gmm, index, condition_val, mean_data, pca, sample_size=200):
+    """  
+    Compute the conditional standard deviation.
+    PCA is necessary since variance/std is not a linear operation
+    We need to do the std computation in the data space, not in the latent space
+
     Parameters:
-        samples: (n, num_samples) array of samples
-        mean: (n,) mean vector
-        eigenvalues: (k,) top k eigenvalues
-        eigenvectors: (n, k) top k eigenvectors
-        verbose: print progress
-    
-    Returns:
-        logprobs: (num_samples,) log probabilities
+    ----------
+    gmm: GMM model object
+    index: array-like, shape (n_new_features,)
+        Indices of dimensions to condition on.
+    condition_val: array, shape (n_new_features, n_samples)
+        Values of the features to condition on. Each column is a sample.
+    mean_data: array, shape (n_data_space_features,)
+        Mean of the data in the original data space.
+    pca: PCA object
+
+    sample_size: int
+        Number of samples to draw from the conditional distribution for each condition_val sample.
     """
-    n, num_samples = samples.shape
-    k = len(eigenvalues)
+    Y_n_samples = condition_val.shape[1]
+    Y_n_dim = condition_val.shape[0]
     
-    # Center the samples
-    centered = samples - mean[:, None]  # (n, num_samples)
+    X_n_dim = gmm.means.shape[1] - Y_n_dim
+    inner_samples_mean_sum = np.zeros(X_n_dim)  # Note: 1D array
     
-    # Project onto eigenvector subspace: Q^T (x - mu)
-    # Shape: (k, num_samples)
-    projections = eigenvectors.T @ centered
-    
-    # Compute Mahalanobis distance in subspace: sum_i (q_i^T(x-mu))^2 / lambda_i
-    # Shape: (num_samples,)
-    mahalanobis = np.sum(projections**2 / eigenvalues[:, None], axis=0)
-    
-    # Log determinant: log|Sigma| ≈ sum log(lambda_i)
-    log_det = np.sum(np.log(eigenvalues))
-    
-    # Normalization constant for k-dimensional Gaussian
-    log_norm = -0.5 * k * np.log(2 * np.pi)
-    
-    # Log probability
-    logprobs = log_norm - 0.5 * log_det - 0.5 * mahalanobis
-    
-    return logprobs
+    print(f"Propagating {Y_n_samples} samples")
+    mean_data = mean_data.flatten()  # Ensure mean_data is 1D
 
-
+    # second pass to get the variance
+    inner_samples_var_sum = np.zeros(mean_data.shape[0])  # Note: 1D array
+    for i in range(Y_n_samples):
+        pred_gmm = gmm.condition(index, condition_val[:,i])
+        inner_samples = pred_gmm.sample(sample_size)  # Shape: (sample_size, X_n_dim)
+        
+        inner_samples_ori = np.zeros((256*256, inner_samples.shape[0]))
+        # Inverse transform to original space
+        # then the uq samples
+        for j, sample in enumerate(inner_samples):
+            inner_samples_ori[:,j] = pca.inverse_transform(sample)
+        # print('shape of inner_samples_ori:', inner_samples_ori.shape)
+        # print('shape of mean_data:', mean_data.flatten().reshape(-1,1).shape)
+        inner_samples_var_sum += np.sum((inner_samples_ori - mean_data.flatten().reshape(-1,1))**2, axis=1)
+        # print every 50 samples
+        if (i+1) % 50 == 0:
+            print(f"Processed {i+1}/{Y_n_samples} samples")
+    total_var = inner_samples_var_sum / (Y_n_samples * sample_size)
+    return np.sqrt(total_var)
 
 def pushforward(md, mean, covariance, mean_p, covariance_p, i_in, i_out):
     """    
@@ -375,8 +397,6 @@ def propagate_uncertainty(mean_p, covariance_p, gmr_md, indices, X):
         marginal_norm_factors[k], exponents = \
             mvn.marginalize(y_indices).to_norm_factor_and_exponents(mean_p.reshape(1, -1))
         marginal_prior_exponents[k] = exponents[0]
-
-    # priors = gmr_md.priors # unchanged during pushforward operation
 
     priors = _safe_probability_density(
         gmr_md.priors * marginal_norm_factors,
