@@ -1,68 +1,13 @@
+from tabnanny import verbose
 import numpy as np
 from gmr import MVN
 from gmr.gmm import _safe_probability_density
+from src.amortization import to_log_probability_density
+from src.ice import enthalpy_to_temperature
 # import pytorch for AD
 import torch
 
 # functions related to finding Maximum A Posteriori (MAP) in the latent space of a trained GMR model
-
-def dTb_dEb(Eb, Tpmp, Cp=2093.0):
-    """  
-    Compute a smooth gradient from enthalpy to temperature.
-
-    Tb = Tpmp if Eb > Cp*Tpmp
-    Tb = (Eb + Cp*To)/Cp if Eb <= Cp*Tpmp
-
-    similar to differentiating a ReLU function, 
-    we can compute the gradient dTb/dEb as follows:
-    dTb/dEb = 0 if Eb > Cp*Tpmp
-    dTb/dEb = 1/Cp if Eb <= Cp*Tpmp
-    
-    """
-    if Eb > Cp * Tpmp:
-        return 0.0
-    else:
-        return 1.0 / Cp
-
-def dL1_dEb(beta, Eb, Tpmp, dw, Cp=2093.0):
-    """  
-    Compute the gradient of log likelihood 1 (the thawed base evidence) with respect to the
-      latent enthalpy at base (Eb asterisk)
-
-    dL1/dEb* = -(1/beta) * \Sum_i^N dTb/dEb * dw
-
-    Parameters:
-    -------
-    beta: scalar
-        temperature scale (K) for the exponential parameterization
-    Eb: array
-        basal enthalpy
-    Tpmp: array
-        pressure melting point 
-    dw: array
-        area of thawed base at each pixel
-    Cp: scalar
-        specific heat capacity of ice (default 2093 J/kg/K)
-
-    Returns:
-    -------
-    dL1_dEb: array
-        gradient of log likelihood 1 with respect to Eb
-    """
-    return -(1.0/beta) * np.sum(dTb_dEb(Eb, Tpmp, Cp) * dw)
-
-def dEb_dEbstar(dL1_dEb, V):
-    """
-    Gradient of enthalpy at base Eb wrt its latent values.
-    For PCA-based model reduction, it's just the right singular vectors
-
-    since dL1_dEb is a scalar, whereas V is (n_features, n_components),
-    we augment dL1_dEb to be (n_features,) by repeating it, 
-    then multiply with V to get the gradient in the latent space (n_components,)
-    """
-    dL1_dEb = np.full(V.shape[0], dL1_dEb)  # shape (n_features,)
-    return dL1_dEb @ V
-
 def loglikelihood_thawed(beta, Tb, Tpmp, dw):
     """
     Compute the log likelihood 1 (the thawed base evidence) given the basal temperature and pressure melting point.
@@ -85,6 +30,8 @@ def loglikelihood_thawed(beta, Tb, Tpmp, dw):
     L1: scalar
         log likelihood 1 value
     """
+    # shape check first
+    shape_check(Tb, Tpmp, dw)
     return -(1.0/beta) * torch.sum((Tpmp-Tb) * dw)
 
 def loglikelihood_frozen(beta, Tb, Tpmp, df, eps = 0.01):
@@ -109,8 +56,8 @@ def loglikelihood_frozen(beta, Tb, Tpmp, df, eps = 0.01):
     L2: scalar
         log likelihood 2 value
     """
-
-    return -torch.sum(torch.log(1 + (eps-1)*torch.exp(-(1/beta)*(Tpmp-Tb))) * df) 
+    shape_check(Tb, Tpmp, df)
+    return torch.sum(torch.log(1 + (eps-1)*torch.exp(-(1/beta)*(Tpmp-Tb))) * df) 
 
 def log_prior(Eb, gmm):
     """   
@@ -124,7 +71,7 @@ def log_prior(Eb, gmm):
         trained GMM model representing the prior distribution over basal enthalpy fields
     """
 
-    return np.log(gmm.to_probability_density(Eb))
+    return to_log_probability_density(gmm, Eb)
 
 def log_prior_gradient(Eb, gmm):
     """   
@@ -146,7 +93,8 @@ def log_prior_gradient(Eb, gmm):
     grad: array, shape (n_features,)
         Gradient of log p(Eb) with respect to Eb
     """
-    n_features = Eb.shape[1]
+
+    n_features = Eb.shape[0]
     n_components = gmm.n_components
     
     # Step 1: Compute probability of Eb under each component
@@ -168,8 +116,10 @@ def log_prior_gradient(Eb, gmm):
         
         # Gradient of log N(x | mu_k, Sigma_k) = -Sigma_k^{-1} (x - mu_k)
         cov_inv = np.linalg.inv(gmm.covariances[k])
-
-        component_grads[k,:] = (-cov_inv @ (Eb.T - gmm.means[k].reshape(-1,1))).flatten()
+        # print('shape of cov_inv:', cov_inv.shape)
+        # print('shape of Eb.T.reshape(-1,1):', Eb.T.reshape(-1,1).shape)
+        # print('shape of gmm.means[k].reshape(-1,1):', gmm.means[k].reshape(-1,1).shape)
+        component_grads[k,:] = (-cov_inv @ (Eb.T.reshape(-1,1) - gmm.means[k].reshape(-1,1))).flatten()
     
     # Step 2: Compute responsibilities (posterior weights) using log-sum-exp trick
     max_log_prob = np.max(component_log_probs)
@@ -189,7 +139,7 @@ def log_likelihoods_sum(beta, Tb, Tpmp, dw, df, eps=0.01):
     L2 = loglikelihood_frozen(beta, Tb, Tpmp, df, eps)
     return L1 + L2
 
-def log_posterior(Eb_star, V, gmm, beta, Tpmp, dw, df):
+def log_posterior(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, verbose = False):
     """   
     Compute the log posterior probability 
     
@@ -211,6 +161,10 @@ def log_posterior(Eb_star, V, gmm, beta, Tpmp, dw, df):
         temperature scale (K) for the exponential parameterization
     Tpmp: array
         pressure melting point at each pixel (n_features,)
+    Eb_mean: array
+        mean of Eb in the training data for reverse standardization (n_features,)
+    Eb_std: array
+        std of Eb in the training data for reverse standardization (n_features,)
     dw: array
         fractional area of thawed base at each pixel (n_features,)
     df: array
@@ -223,13 +177,21 @@ def log_posterior(Eb_star, V, gmm, beta, Tpmp, dw, df):
         V = torch.from_numpy(V)
     if isinstance(Tpmp, np.ndarray):
         Tpmp = torch.from_numpy(Tpmp)
+    if isinstance(Eb_mean, np.ndarray):
+        Eb_mean = torch.from_numpy(Eb_mean)
+    if isinstance(Eb_std, np.ndarray):
+        Eb_std = torch.from_numpy(Eb_std)
     if isinstance(dw, np.ndarray):
         dw = torch.from_numpy(dw)
     if isinstance(df, np.ndarray):
         df = torch.from_numpy(df)
 
     Eb = V.T @ Eb_star # map from latent space to original space
-    Tb = enthalpy_to_temperature(Eb, Tpmp)
+    Eb_ori = reverse_standardize(Eb, Eb_mean, Eb_std) # reverse standardization
+    Tb = enthalpy_to_temperature(Eb_ori, Tpmp)
+    # check that no Tb is above Tpmp 
+    if torch.any(Tb > Tpmp):
+        raise ValueError('Tb should not be above Tpmp, but found some Tb > Tpmp')
 
     L1 = loglikelihood_thawed(beta, Tb, Tpmp, dw)
     L2 = loglikelihood_frozen(beta, Tb, Tpmp, df)
@@ -238,41 +200,153 @@ def log_posterior(Eb_star, V, gmm, beta, Tpmp, dw, df):
     Eb_star_np = Eb_star.detach().numpy()
     log_prior_val = log_prior(Eb_star_np, gmm)
     
-    return -(L1 + L2 + log_prior_val)
+    if verbose:
+        print(f"Log Likelihood Thawed: {L1.item():.3f}")
+        print(f"Log Likelihood Frozen: {L2.item():.3f}")
+        print(f"Log Prior: {log_prior_val.item():.3f}")
 
-def log_posterior_gradient(Eb, gmm, beta, Tpmp, dw, df):
+    return L1 + L2 + log_prior_val
+
+def log_posterior_gradient(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df):
     """   
     Compute the gradient of the log posterior prob wrt Eb.
     
     Here we use Torch AD for the two likelihood terms and use the analytical gradient for the log prior term
+
+    Parameters:
+    -------
+    Eb_star: array
+        basal enthalpy field in the latent space (n_latent_features,)
+    V: array
+        right singular vectors from PCA (n_features, n_latent_feature)
+    gmm: GaussianMixture
+        trained GMM model
+    Tpmp: array
+        pressure melting point at each pixel (n_features,)
+    Eb_mean: array
+        mean of Eb in the training data for reverse standardization (n_features,)
+    Eb_std: array
+        std of Eb in the training data for reverse standardization (n_features,)
+    dw: array
+        fractional area of thawed base at each pixel (n_features,)
+    df: array
+        fractional area of frozen base at each pixel (n_features,)
+    beta: scalar
+        temperature scale (K) for the exponential parameterization
     
     """
-    Eb_tensor = torch.tensor(Eb, requires_grad=True)
-    Tb = enthalpy_to_temperature(Eb_tensor, Tpmp)
+    if isinstance(V, np.ndarray):
+        V = torch.from_numpy(V)
+    if isinstance(Eb_star, np.ndarray):
+        Eb_star = torch.from_numpy(Eb_star)
+    if isinstance(Tpmp, np.ndarray):
+        Tpmp = torch.from_numpy(Tpmp)
+    if isinstance(Eb_mean, np.ndarray):
+        Eb_mean = torch.from_numpy(Eb_mean)
+    if isinstance(Eb_std, np.ndarray):
+        Eb_std = torch.from_numpy(Eb_std)
+    if isinstance(dw, np.ndarray):
+        dw = torch.from_numpy(dw)
+    if isinstance(df, np.ndarray):
+        df = torch.from_numpy(df)
+
+    Eb_star_tensor = torch.tensor(Eb_star, requires_grad=True)
+    Eb_tensor = V.T @ Eb_star_tensor
+    Eb_ori = reverse_standardize(Eb_tensor, Eb_mean, Eb_std)
+    Tb = enthalpy_to_temperature(Eb_ori, Tpmp)
 
     # forward compute of the likelihood terms
     llsum = log_likelihoods_sum(beta, Tb, Tpmp, dw, df)
 
     # Compute gradients using AD
     llsum.backward()
-    likelihood_grad = Eb_tensor.grad.detach().numpy()
+    likelihood_grad = Eb_star_tensor.grad.detach().numpy()
 
     # Compute gradient of log prior
-    prior_grad = log_prior_gradient(Eb, gmm)
+    prior_grad = log_prior_gradient(Eb_star_tensor.detach().numpy(), gmm)
 
     # Total gradient is the sum of likelihood and prior gradients
     total_grad = likelihood_grad + prior_grad
     
     return total_grad
 
-def enthalpy_to_temperature(Eb, Tpmp, Cp=2093.0, C0=223.15):
+def finite_difference_check(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, epsilon=1e-5):
     """  
-    Compute basal temperature from enthalpy
+    Perform finite difference check for the log posterior gradient.
 
-    Tb = Tpmp if Eb > Cp*Tpmp
-    Tb = (Eb + Cp*To)/Cp if Eb <= Cp*Tpmp
+    Parameters:
+    -------
+    Eb_star: array
+        basal enthalpy field in the latent space (n_latent_features,)
+    V: array
+        right singular vectors from PCA (n_features, n_latent_feature)
+    gmm: GaussianMixture
+        trained GMM model
+    Tpmp: array
+        pressure melting point at each pixel (n_features,)
+    Eb_mean: array
+        mean of Eb in the training data for reverse standardization (n_features,)
+    Eb_std: array
+        std of Eb in the training data for reverse standardization (n_features,)
+    dw: array
+        fractional area of thawed base at each pixel (n_features,)
+    df: array
+        fractional area of frozen base at each pixel (n_features,)
+    beta: scalar
+        temperature scale (K) for the exponential parameterization
+    epsilon: scalar
+        small perturbation for finite difference
+
+    Returns:
+    -------
+    finite_diff_grad: array
+        Gradient computed using finite difference approximation
+    """
+    finite_diff_grad = np.zeros_like(Eb_star)
+    
+    for i in range(len(Eb_star)):
+        Eb_star_plus = np.copy(Eb_star)
+        Eb_star_minus = np.copy(Eb_star)
+        
+        Eb_star_plus[i] += epsilon
+        Eb_star_minus[i] -= epsilon
+        
+        log_post_plus = log_posterior(Eb_star_plus, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df)
+        log_post_minus = log_posterior(Eb_star_minus, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df)
+        
+        finite_diff_grad[i] = (log_post_plus - log_post_minus) / (2 * epsilon)
+    
+    return finite_diff_grad
+
+def reverse_standardize(X, mean, std, method='standard'):
+    """
+    reverse z-score standardization (standard)
+    or with relaxation 
 
     """
+    # first check X, mean, and std have the same shape
+    # or it will do outer product and our computer will EXPLODE SIR
+    shape_check(X, mean, std)
+    if method == 'standard':
+        return X * std + mean
+    elif method == 'relaxation':
+        return X * std + mean
+    else:
+        raise ValueError("Unknown method: {}".format(method))
+    
+def shape_check(*arrays):
+    """  
+    Check that all input arrays have the same shape.
 
-    Tb = torch.where(Eb > Cp * Tpmp, Tpmp, (Eb + Cp*C0) / Cp)
-    return Tb
+    Parameters:
+    -------
+    *arrays: list of arrays
+        list of arrays to check
+
+    Raises:
+    -------
+    ValueError: if any two arrays have different shapes
+    """
+    shapes = [arr.shape for arr in arrays]
+    if len(set(shapes)) > 1:
+        raise ValueError("All input arrays must have the same shape, but got shapes: {}".format(shapes))

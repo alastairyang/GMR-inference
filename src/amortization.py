@@ -1,14 +1,15 @@
 import numpy as np
-from gmr.utils import check_random_state
-from gmr import MVN, GMM, plot_error_ellipses
 from scipy.sparse.linalg import eigsh, LinearOperator
 from scipy.spatial import cKDTree
-from gmr.mvn import regression_coefficients
-from gmr.gmm import _safe_probability_density
+import scipy as sp
 import scipy.io
 from scipy.linalg import pinvh
 import time
 
+from gmr.utils import check_random_state
+from gmr import MVN, GMM, plot_error_ellipses
+from gmr.mvn import regression_coefficients
+from gmr.gmm import _safe_probability_density
 
 def form_obs_cov_col(H, x, y, mask, colnum):
     """ 
@@ -384,7 +385,6 @@ def propagate_uncertainty(mean_p, covariance_p, gmr_md, indices, X):
     # iterate through each Gaussian component
     y_indices = indices
     x_indices = np.setdiff1d(np.arange(gmr_md.means.shape[1]), indices)
-    print("x indices are: ", x_indices)
     for k in range(gmr_md.n_components):
         mvn = MVN(mean=gmr_md.means[k], covariance=gmr_md.covariances[k],
                     random_state=gmr_md.random_state)
@@ -404,3 +404,124 @@ def propagate_uncertainty(mean_p, covariance_p, gmr_md, indices, X):
     
     return GMM(n_components=gmr_md.n_components, priors=priors, means=means,
                 covariances=covariances, random_state=gmr_md.random_state)
+
+# ----------------------
+# Code is from gmr.mvn for reference
+    def to_norm_factor_and_exponents(self, X):
+        """Compute normalization factor and exponents of Gaussian.
+
+        These values can be used to compute the probability density function
+        of this Gaussian: p(x) = norm_factor * np.exp(exponents).
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Data.
+
+        Returns
+        -------
+        norm_factor : float
+            Normalization factor: constant term outside of exponential
+            function in probability density function of this Gaussian.
+
+        exponents : array, shape (n_samples,)
+            Exponents to compute probability density function.
+        """
+        self._check_initialized()
+
+        X = np.atleast_2d(X)
+        n_features = X.shape[1]
+
+        try:
+            L = sp.linalg.cholesky(self.covariance, lower=True)
+        except np.linalg.LinAlgError:
+            # Degenerated covariance, try to add regularization
+            L = sp.linalg.cholesky(
+                self.covariance + 1e-3 * np.eye(n_features), lower=True)
+
+        X_minus_mean = X - self.mean
+
+        if self.norm is None:
+            # Suppress a determinant of 0 to avoid numerical problems
+            L_det = max(sp.linalg.det(L), np.finfo(L.dtype).eps)
+            self.norm = (2.0 * np.pi) ** (-0.5 * n_features) / L_det
+
+        # Solve L x = (X - mean)^T for x with triangular L
+        # (LL^T = Sigma), that is, x = L^T^-1 (X - mean)^T.
+        # We can avoid covariance inversion when computing
+        # (X - mean) Sigma^-1 (X - mean)^T  with this trick,
+        # since Sigma^-1 = L^T^-1 L^-1.
+        X_normalized = sp.linalg.solve_triangular(
+            L, X_minus_mean.T, lower=True).T
+
+        exponent = -0.5 * np.sum(X_normalized ** 2, axis=1)
+
+        return self.norm, exponent
+
+    def to_probability_density(self, X):
+        """Compute probability density.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Data.
+
+        Returns
+        -------
+        p : array, shape (n_samples,)
+            Probability densities of data.
+        """
+        norm_factor, exponents = self.to_norm_factor_and_exponents(X)
+        return norm_factor * np.exp(exponents)
+
+# ----------------- end of reference code
+
+def to_log_probability_density(gmm, X):
+    """
+    Compute the log probability density for each sample in X.
+    
+    Parameters
+    ----------
+    X : array-like, shape (n_samples, n_features)
+        Data.
+    
+    Returns
+    -------
+    log_prob : array, shape (n_samples,)
+        Log probability density for each sample.
+    """
+    X = np.atleast_2d(X)
+    n_samples, n_features = X.shape
+    
+    # Store log probabilities for each component and sample
+    log_prob_components = np.zeros((n_samples, gmm.n_components))
+    
+    for k in range(gmm.n_components):
+        mean = gmm.means[k]
+        covariance = gmm.covariances[k]
+        
+        # Cholesky decomposition
+        try:
+            L = sp.linalg.cholesky(covariance, lower=True)
+        except np.linalg.LinAlgError:
+            L = sp.linalg.cholesky(
+                covariance + 1e-3 * np.eye(n_features), lower=True)
+        
+        # Log normalization constant: log(1/sqrt((2π)^d * |Σ|))
+        log_det_L = np.sum(np.log(np.diag(L)))  # log|L| = sum(log(L_ii))
+        log_norm = -0.5 * n_features * np.log(2.0 * np.pi) - log_det_L
+        
+        # Mahalanobis distance
+        X_minus_mean = X - mean
+        X_normalized = sp.linalg.solve_triangular(
+            L, X_minus_mean.T, lower=True).T
+        log_exponent = -0.5 * np.sum(X_normalized ** 2, axis=1)
+        
+        # Log probability for component k: log(π_k) + log(N(x|μ_k, Σ_k))
+        log_prob_components[:, k] = np.log(gmm.priors[k]) + log_norm + log_exponent
+    
+    # Log-sum-exp trick: log(Σ exp(x_i)) = c + log(Σ exp(x_i - c))
+    c = np.max(log_prob_components, axis=1, keepdims=True)
+    log_prob = c.squeeze() + np.log(np.sum(np.exp(log_prob_components - c), axis=1))
+    
+    return log_prob
