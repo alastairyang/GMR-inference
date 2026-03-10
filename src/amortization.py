@@ -325,14 +325,6 @@ def pushforward(md, mean, covariance, mean_p, covariance_p, i_in, i_out):
     regression_coeffs = regression_coefficients(
         covariance, i_out, i_in, cov_12=cov_12)
     
-    # print("i_out:", i_out)
-    # print("i_in:", i_in)
-
-    # print("size of mean[i_out]:", mean[i_out].shape)
-    # print("size of mean[i_in]:", mean[i_in].reshape(-1,1).shape)
-    # print("size of X:", X.shape)
-    # print("size of mean_p:", mean_p.shape)
-    # print("size of regression_coeffs:", regression_coeffs.shape)
     mean_target = mean[i_out] + regression_coeffs.dot(mean_p.squeeze() - mean[i_in])
     # print("size of mean_target:", mean_target.shape)
     covariance = cov_11 - regression_coeffs.dot(cov_12.T)

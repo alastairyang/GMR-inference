@@ -121,7 +121,7 @@ def log_prior_gradient(Eb, gmm):
         # print('shape of gmm.means[k].reshape(-1,1):', gmm.means[k].reshape(-1,1).shape)
         component_grads[k,:] = (-cov_inv @ (Eb.T.reshape(-1,1) - gmm.means[k].reshape(-1,1))).flatten()
     
-    # Step 2: Compute responsibilities (posterior weights) using log-sum-exp trick
+    # Compute responsibilities (posterior weights) using log-sum-exp trick
     max_log_prob = np.max(component_log_probs)
     log_probs_stable = component_log_probs - max_log_prob
     
@@ -129,12 +129,12 @@ def log_prior_gradient(Eb, gmm):
     responsibilities = np.exp(log_probs_stable)
     responsibilities /= np.sum(responsibilities)
     
-    # Step 3: Weighted sum of gradients
+    # Weighted sum of gradients
     grad = np.sum(responsibilities[:, np.newaxis] * component_grads, axis=0)
     
     return grad
 
-def log_likelihoods_sum(beta, Tb, Tpmp, dw, df, eps=0.01):
+def loglikelihoods_sum(beta, Tb, Tpmp, dw, df, eps=0.01):
     L1 = loglikelihood_thawed(beta, Tb, Tpmp, dw)
     L2 = loglikelihood_frozen(beta, Tb, Tpmp, df, eps)
     return L1 + L2
@@ -256,7 +256,7 @@ def log_posterior_gradient(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df)
     Tb = enthalpy_to_temperature(Eb_ori, Tpmp)
 
     # forward compute of the likelihood terms
-    llsum = log_likelihoods_sum(beta, Tb, Tpmp, dw, df)
+    llsum = loglikelihoods_sum(beta, Tb, Tpmp, dw, df)
 
     # Compute gradients using AD
     llsum.backward()
