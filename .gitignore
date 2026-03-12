@@ -3,3 +3,4 @@
 *.netcdf
 *.tif
 data
+*.npz
