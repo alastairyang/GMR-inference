@@ -9,7 +9,7 @@ def compute_pmp(H):
     beta=9.8e-8
     return 273.15 - rho_i * g * H * beta 
 
-def enthalpy_to_temperature(Eb, Tpmp, Cp=2093.0, T0=223.15):
+def enthalpy_to_temperature(Eb, Tpmp, Cp=2093.0, T0=223.15, istorch=True):
     """  
     Compute temperature from enthalpy
 
@@ -18,5 +18,9 @@ def enthalpy_to_temperature(Eb, Tpmp, Cp=2093.0, T0=223.15):
 
     """
 
-    Tb = torch.where(Eb > Cp * (Tpmp-T0), Tpmp, (Eb + Cp*T0) / Cp)
+    if istorch:
+        Tb = torch.where(Eb > Cp*(Tpmp-T0), Tpmp, (Eb + Cp*T0)/Cp)
+    else: # numpy
+        Tb = np.where(Eb > Cp*(Tpmp-T0), Tpmp, (Eb + Cp*T0)/Cp)
     return Tb
+

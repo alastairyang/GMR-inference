@@ -270,6 +270,97 @@ def log_posterior_gradient(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df)
     
     return total_grad
 
+def log_prior_hessian(Eb, gmm):
+    """
+    Analytical Hessian of log GMM prior.
+    
+    H[log p(x)] = sum_k r_k(-Sigma_k^{-1} + g_k g_k^T) - (sum_k r_k g_k)(sum_k r_k g_k)^T
+    
+    Parameters:
+    -----------
+    Eb : np.ndarray, shape (n_features,)
+    gmm : trained GMM object
+    
+    Returns:
+    --------
+    hessian : np.ndarray, shape (n_features, n_features)
+    """
+    n_features    = Eb.shape[0]
+    n_components  = gmm.n_components
+
+    component_log_probs = np.zeros(n_components)
+    component_grads     = np.zeros((n_components, n_features))
+    cov_invs            = []
+
+    for k in range(n_components):
+        mvn = MVN(mean=gmm.means[k],
+                  covariance=gmm.covariances[k],
+                  random_state=gmm.random_state)
+
+        norm_factor, exponent = mvn.to_norm_factor_and_exponents(Eb)
+        component_log_probs[k] = (np.log(gmm.priors[k])
+                                  + np.log(norm_factor)
+                                  + exponent[0])
+
+        cov_inv = np.linalg.inv(gmm.covariances[k])
+        cov_invs.append(cov_inv)
+        diff = (Eb - gmm.means[k]).reshape(-1, 1)          # (d, 1)
+        component_grads[k] = (-cov_inv @ diff).flatten()   # g_k
+
+    # Responsibilities via log-sum-exp (same as your gradient function)
+    max_log_prob    = np.max(component_log_probs)
+    responsibilities = np.exp(component_log_probs - max_log_prob)
+    responsibilities /= responsibilities.sum()              # r_k
+
+    # Hessian assembly
+    weighted_hess = np.zeros((n_features, n_features))
+    for k in range(n_components):
+        g_k = component_grads[k].reshape(-1, 1)            # (d, 1)
+        weighted_hess += responsibilities[k] * (
+            -cov_invs[k] + g_k @ g_k.T                     # -Σ_k^{-1} + g_k g_k^T
+        )
+
+    # Subtract outer product of the total gradient
+    mean_grad = (responsibilities[:, np.newaxis] * component_grads).sum(axis=0)
+    weighted_hess -= np.outer(mean_grad, mean_grad)         # - (Σ r_k g_k)(Σ r_k g_k)^T
+
+    return weighted_hess
+
+def log_posterior_hessian(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df):
+    """
+    Hybrid Hessian of log posterior:
+      - Likelihood terms: autograd (torch)
+      - Prior term:       analytical GMM Hessian
+    """
+    # --- numpy → torch conversions (same as your gradient function) ---
+    if isinstance(V,        np.ndarray): V        = torch.from_numpy(V)
+    if isinstance(Eb_star,  np.ndarray): Eb_star  = torch.from_numpy(Eb_star)
+    if isinstance(Tpmp,     np.ndarray): Tpmp     = torch.from_numpy(Tpmp)
+    if isinstance(Eb_mean,  np.ndarray): Eb_mean  = torch.from_numpy(Eb_mean)
+    if isinstance(Eb_std,   np.ndarray): Eb_std   = torch.from_numpy(Eb_std)
+    if isinstance(dw,       np.ndarray): dw       = torch.from_numpy(dw)
+    if isinstance(df,       np.ndarray): df       = torch.from_numpy(df)
+
+    Eb_star_tensor = Eb_star.clone().detach().requires_grad_(True)
+
+    # --- Likelihood Hessian via autograd ---
+    def likelihood_fn(x):
+        Eb     = V.T @ x
+        Eb_ori = reverse_standardize(Eb, Eb_mean, Eb_std)
+        Tb     = enthalpy_to_temperature(Eb_ori, Tpmp)
+        return loglikelihoods_sum(beta, Tb, Tpmp, dw, df)
+
+    likelihood_hessian = torch.autograd.functional.hessian(
+        likelihood_fn, Eb_star_tensor
+    ).detach().numpy()
+
+    # --- Prior Hessian analytically ---
+    Eb_star_np    = Eb_star_tensor.detach().numpy()
+    prior_hessian = log_prior_hessian(Eb_star_np, gmm)
+
+    return likelihood_hessian + prior_hessian
+
+
 def finite_difference_check(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, epsilon=1e-5):
     """  
     Perform finite difference check for the log posterior gradient.
