@@ -23,6 +23,7 @@ def compute_importance_sampling(
     inference_param,
     V,
     beta: float = 10.0,
+    batch_size: int = 500
 ) -> np.ndarray:
     """
     Compute importance sampling weights and update posterior estimates
@@ -42,6 +43,8 @@ def compute_importance_sampling(
                              .Eb_sim_mean      – standardisation mean array
                              .H                – ice thickness array
                              .sample_size : int
+                             .dw                 array, fractional thawed area per pixel
+                             .df                 array, fractional frozen area per pixel
                              .nx                 x dimension of the image (n_features).
                              .ny                 y dimension of the image (n_features).
                                                  Number of samples per batch (M).
@@ -49,6 +52,8 @@ def compute_importance_sampling(
                              right singular vectors from PCA (n_features, n_latent_feature)
     beta                  : float
                              e-folding temperature scale for likelihood.
+    batch_size            : int
+                             Number of samples per batch (M).
 
     Returns
     -------
@@ -83,70 +88,95 @@ def compute_importance_sampling(
 
     log_weight_process  = True
     log_density_process = True
+    
+    if inference_param['sample_size'] < batch_size:
+        batch_num = 1
+        print(f"Total samples: {inference_param['sample_size']} is less than batch size")
+        print(f"Drawing {inference_param['sample_size']} samples in one batch.")
+        sample_size_per = inference_param['sample_size']
+    else:
+        batch_num = int(np.ceil(inference_param['sample_size'] / batch_size))
+        sample_size_per = batch_size
+        print(f"Total samples: {inference_param['sample_size']}, "
+            f"Batch size: {sample_size_per}, "
+            f"Number of batches: {batch_num}")
+    
+    # collect all the weights across batches
+    all_weights = []
+    all_log_q = []
+    for b in range(batch_num):
+        print(f"Processing batch {b+1}/{batch_num}...")
 
-    # ---- sampling from the proposal distribution (Gaussian)
-    proposal = multivariate_normal(mean=mu, cov=sigma)
-    Eb_sample = proposal.rvs(size=inference_param['sample_size'])
-    # log prob of proposal
-    log_q = proposal.logpdf(Eb_sample)
-    # print("Eb_sample shape:", Eb_sample.shape)
-    # print("log_prob_proposal:", log_prob_proposal)
+        # ---- sampling from the proposal distribution (Gaussian)
+        proposal = multivariate_normal(mean=mu, cov=sigma)
+        Eb_sample = proposal.rvs(size=sample_size_per)
+        # log prob of proposal
+        log_q = proposal.logpdf(Eb_sample)
+        # print("Eb_sample shape:", Eb_sample.shape)
+        # print("log_prob_proposal:", log_prob_proposal)
 
-    # --- log-probability density from prior ---------
-    log_px = to_log_probability_density(model, Eb_sample)
+        # --- log-probability density from prior ---------
+        log_px = to_log_probability_density(model, Eb_sample)
 
-    # bring Eb_sample to data dimension 
-    Eb_sample = (Eb_sample @ V).T 
+        # bring Eb_sample to data dimension 
+        Eb_sample = (Eb_sample @ V).T 
 
-    # --- enthalpy → temperature (Kelvin) ---
-    # print("Eb_sample shape after projection:", Eb_sample.shape)
-    # print("H shape:", inference_param['H'].shape)
-    H_aug    = np.broadcast_to(
-        inference_param['H'][..., np.newaxis],
-        Eb_sample.shape
-    )
-    Eb_post  = Eb_sample * Eb_sim_std_aug + Eb_sim_mean_aug
-    Tb = enthalpy_to_temperature(Eb_post, H_aug, istorch=False)     # shape: (N1, N2, C, M)
-
-    # --- flatten spatial dims ---
-
-    # --- debug NaN count ---
-    nan_count = np.sum(np.isnan(Tb))
-    print(f"NaN count in Tb: {nan_count}")
-
-    # --- compute importance weights ---
-    if evidence_type == "thawed":
-        weights = importance_weight_thawed(
-            Tb, watermask_val, log_px,
-            log_density=log_density_process,
-            log_weight=log_weight_process,
-            beta=beta,
-            Tpmp=Tpmp
+        # --- enthalpy → temperature (Kelvin) ---
+        # print("Eb_sample shape after projection:", Eb_sample.shape)
+        # print("H shape:", inference_param['H'].shape)
+        H_aug    = np.broadcast_to(
+            inference_param['H'][..., np.newaxis],
+            Eb_sample.shape
         )
-    elif evidence_type == "frozen":
-        weights = importance_weight_frozen(
-            Tb, frozenmask_val, log_px,
-            log_density=log_density_process,
-            log_weight=log_weight_process,
-            beta=beta,
-            Tpmp=Tpmp
-        )
-    elif evidence_type == "both":
-        weights = importance_weight_frozen_and_thawed(
-            Tb, watermask_val,
-            frozenmask_val, log_px,
-            log_density=log_density_process,
-            log_weight=log_weight_process,
-            beta=beta,
-            Tpmp=Tpmp
-        )
+        Eb_post  = Eb_sample * Eb_sim_std_aug + Eb_sim_mean_aug
+        Tb = enthalpy_to_temperature(Eb_post, H_aug, istorch=False)     # shape: (N1, N2, C, M)
 
+        # --- flatten spatial dims ---
 
+        # --- debug NaN count ---
+        nan_count = np.sum(np.isnan(Tb))
+        print(f"NaN count in Tb: {nan_count}")
+
+        # --- compute importance weights ---
+        if evidence_type == "thawed":
+            weights = importance_weight_thawed(
+                Tb, watermask_val, log_px,
+                log_density=log_density_process,
+                log_weight=log_weight_process,
+                beta=beta,
+                Tpmp=Tpmp,
+                dw=inference_param['dw']
+            )
+        elif evidence_type == "frozen":
+            weights = importance_weight_frozen(
+                Tb, frozenmask_val, log_px,
+                log_density=log_density_process,
+                log_weight=log_weight_process,
+                beta=beta,
+                Tpmp=Tpmp,
+                df=inference_param['df']
+            )
+        elif evidence_type == "both":
+            weights = importance_weight_frozen_and_thawed(
+                Tb, watermask_val,
+                frozenmask_val, log_px,
+                log_density=log_density_process,
+                log_weight=log_weight_process,
+                beta=beta,
+                Tpmp=Tpmp,
+                dw=inference_param['dw'],
+                df=inference_param['df']
+            )
+        all_weights.append(weights)
+        all_log_q.append(log_q)
+
+    all_weights = np.concatenate(all_weights, axis=0)
+    all_log_q = np.concatenate(all_log_q, axis=0)
     print("All weights computed for current batch.")
-
+    print("log proposal: ", all_log_q[-10:])
     # Normalise weights and diagnostics
     # first divided by the proposal weights
-    weights_vec = weights - log_q                  
+    weights_vec = all_weights - all_log_q                  
     log_w_vec   = weights_vec
 
     lse_val             = log_sum_exp(log_w_vec)
@@ -156,8 +186,8 @@ def compute_importance_sampling(
     ess                 = float(1.0 / np.sum(normalized_weights ** 2))
     sorted_w            = np.sort(normalized_weights)[::-1]      # descending
 
-    print(f"max of log weights: {np.max(weights):.4f}")
-    print(f"max of log proposal weights: {np.max(log_q):.4f}")
+    print(f"max of log weights: {np.max(all_weights):.4f}")
+    print(f"max of log proposal weights: {np.max(all_log_q):.4f}")
     print(f"Max normalized weight: {max_weight:.6f}  (should be <<1 for good mixing)")
     print(f"Effective sample size (ESS): {ess:.1f} out of {inference_param['sample_size']} "
           f"(should be >10% of M for reliable variance)")
@@ -176,7 +206,8 @@ def importance_weight_frozen(
     log_density: bool = True,
     log_weight: bool = True,
     beta: float = 5.0,
-    Tpmp: Union[float, np.ndarray] = 273.15
+    Tpmp: Union[float, np.ndarray] = 273.15,
+    df: np.ndarray = None
 ) -> np.ndarray:
     """
     Calculates log(p(T_b|w)p(T_b)) weights for importance sampling.
@@ -217,7 +248,7 @@ def importance_weight_frozen(
         warnings.warn("No frozen pixels (sum(y)==0); weights set to uniform.")
         return np.zeros(M) if log_weight else np.ones(M)
 
-    proposal_logpx = px if log_density else np.log(px)
+    prior_logpx = px if log_density else np.log(px)
     weights        = np.zeros(M)
 
     # --- Vectorised over all M samples at once ---
@@ -227,14 +258,14 @@ def importance_weight_frozen(
     exceedance  = np.maximum(0.0, Tpmp_frozen[:, None] - X_frozen)          # (num_frozen, M)
     inner       = np.maximum(epsilon, 1.0 - np.exp(-(1.0 / beta) * exceedance))
     log_lik_mat = np.log(inner)                                              # (num_frozen, M)
-    log_likelihood = log_lik_mat.sum(axis=0) / num_frozen                   # (M,)
+    log_likelihood = log_lik_mat.sum(axis=0)             # (M,)
 
-    log_w = log_likelihood + proposal_logpx
+    log_w = log_likelihood + prior_logpx
     weights = log_w if log_weight else np.exp(log_w)
 
     # Debug: display values from the last sample
     print(f"log_likelihood (last sample) = {log_likelihood[-1]}")
-    print(f"proposal_logpx (last sample) = {proposal_logpx[-1]}")
+    print(f"prior_logpx (last sample) = {prior_logpx[-1]}")
 
     return weights
 
@@ -249,7 +280,8 @@ def importance_weight_thawed(
     log_density: bool = True,
     log_weight: bool = True,
     beta: float = 5.0,
-    Tpmp: Union[float, np.ndarray] = 273.15
+    Tpmp: Union[float, np.ndarray] = 273.15,
+    dw: np.ndarray = None
 ) -> np.ndarray:
     """
     Calculates log(p(T_b|w)p(T_b)) weights for importance sampling.
@@ -287,20 +319,20 @@ def importance_weight_thawed(
         warnings.warn("No water pixels (sum(y)==0); weights set to uniform.")
         return np.zeros(M) if log_weight else np.ones(M)
 
-    proposal_logpx = px if log_density else np.log(px)
+    prior_logpx = px if log_density else np.log(px)
 
     # --- Vectorised over all M samples at once ---
     X_water    = x[water_rows, :]            # (num_water, M)
     Tpmp_water = Tpmp_vec[water_rows]        # (num_water,)
 
     exceedance     = np.maximum(0.0, Tpmp_water[:, None] - X_water)   # (num_water, M)
-    log_likelihood = -exceedance.sum(axis=0) / (beta * num_water)      # (M,)
+    log_likelihood = -exceedance.sum(axis=0) / (beta)      # (M,)
 
-    log_w   = log_likelihood + proposal_logpx
+    log_w   = log_likelihood + prior_logpx
     weights = log_w if log_weight else np.exp(log_w)
 
     print(f"log_likelihood (last sample) = {log_likelihood[-1]}")
-    print(f"proposal_logpx (last sample) = {proposal_logpx[-1]}")
+    print(f"prior_logpx (last sample) = {prior_logpx[-1]}")
 
     return weights
 
@@ -316,7 +348,9 @@ def importance_weight_frozen_and_thawed(
     log_density: bool = True,
     log_weight: bool = True,
     beta: float = 5.0,
-    Tpmp: Union[float, np.ndarray] = 273.15
+    Tpmp: Union[float, np.ndarray] = 273.15,
+    dw: np.ndarray = None,
+    df: np.ndarray = None
 ) -> np.ndarray:
     """
     Calculates log(p(E_b|w)p(E_b)) weights for importance sampling,
@@ -332,6 +366,8 @@ def importance_weight_frozen_and_thawed(
     log_weight  : If True, return log weights; else raw weights.
     beta        : Scalar e-folding temperature scale.
     Tpmp        : Scalar or (N,) array — Pressure melting point temperature(s).
+    dw          : (N,) array — Fractional thawed area per pixel.
+    df          : (N,) array — Fractional frozen area per pixel.
 
     Returns
     -------
@@ -355,6 +391,29 @@ def importance_weight_frozen_and_thawed(
     num_water   = len(water_rows)
     num_frozen  = len(frozen_rows)
 
+    if dw is None:
+        dw = yw.astype(float)
+    if df is None:
+        df = yf.astype(float)
+
+    # # debug: visualize both yw and yf as imshow, reshape first
+    # yw_image = dw.reshape(256,256)
+    # yf_image = df.reshape(256,256)
+    # import matplotlib.pyplot as plt
+    # plt.figure(figsize=(12, 5))
+    # plt.subplot(1, 2, 1)
+    # plt.title("Thawed Evidence Mask (yw)")
+    # plt.imshow(yw_image, cmap='Reds')
+    # plt.colorbar()
+    # plt.gca().invert_yaxis()
+    # plt.subplot(1, 2, 2)
+    # plt.title("Frozen Evidence Mask (yf)")
+    # plt.imshow(yf_image, cmap='Blues')
+    # plt.colorbar()
+    # plt.gca().invert_yaxis()
+    # plt.show()
+
+
     if num_water == 0:
         warnings.warn("No water pixels (sum(yw)==0); weights set to uniform.")
         return np.zeros(M) if log_weight else np.ones(M)
@@ -362,25 +421,28 @@ def importance_weight_frozen_and_thawed(
         warnings.warn("No frozen pixels (sum(yf)==0); weights set to uniform.")
         return np.zeros(M) if log_weight else np.ones(M)
 
-    proposal_logpx = px if log_density else np.log(px)
+    prior_logpx = px if log_density else np.log(px)
 
     # --- Thawed contribution ---
     X_water    = x[water_rows, :]                                           # (num_water, M)
     Tpmp_water = Tpmp_vec[water_rows]
     water_exc  = np.maximum(0.0, Tpmp_water[:, None] - X_water)            # (num_water, M)
-    log_likelihood = -water_exc.sum(axis=0) / (beta * num_water)            # (M,)
+    water_exec_area = water_exc * dw[water_rows][:, None]                                 # (num_water, M)
+    log_likelihood = -water_exec_area.sum(axis=0) / (beta)            # (M,)
 
     # --- Frozen contribution ---
     X_frozen    = x[frozen_rows, :]                                         # (num_frozen, M)
     Tpmp_frozen = Tpmp_vec[frozen_rows]
     frozen_exc  = np.maximum(0.0, Tpmp_frozen[:, None] - X_frozen)         # (num_frozen, M)
     exponential = np.maximum(epsilon, 1.0 - np.exp(-(1.0 / beta) * frozen_exc))
-    log_likelihood += np.log(exponential).sum(axis=0) / num_frozen          # (M,)
+    exponential_area = exponential * df[frozen_rows][:, None]                               # (num_frozen, M)
+    
+    log_likelihood += np.log(exponential_area).sum(axis=0)         # (M,)
 
-    log_w   = log_likelihood +proposal_logpx
+    log_w   = log_likelihood + prior_logpx
     weights = log_w if log_weight else np.exp(log_w)
 
-    print(f"log_likelihood (last sample) = {log_likelihood[-1]}")
-    print(f"proposal_logpx (last sample) = {proposal_logpx[-1]}")
+    print(f"log_likelihood = ...{log_likelihood[-10:]}")
+    print(f"prior_logpx  = ...{prior_logpx[-10:]}")
 
     return weights
