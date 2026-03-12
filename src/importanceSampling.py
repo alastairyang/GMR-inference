@@ -76,25 +76,13 @@ def compute_importance_sampling(
     else:
         raise ValueError("No evidence provided for importance sampling.")
 
-    # ------------------------------------------------------------------
-    # 3. Pressure melting point from ice thickness
-    # ------------------------------------------------------------------
     Tpmp = compute_pmp(inference_param['H'])  
 
-    # ------------------------------------------------------------------
-    # 4. Pre-broadcast std / mean for de-standardisation
-    # ------------------------------------------------------------------
-    Eb_sim_std_aug  = np.repeat(inference_param['Eb_sim_std'][..., np.newaxis],
-                                inference_param['sample_size'], axis=-1)
-    Eb_sim_mean_aug = np.repeat(inference_param['Eb_sim_mean'][..., np.newaxis],
-                                inference_param['sample_size'], axis=-1)
-    
-    print("size of Eb_sim_std_aug:", Eb_sim_std_aug.shape)
-    print("size of Eb_sim_mean_aug:", Eb_sim_mean_aug.shape)
+    Eb_sim_std_aug  = inference_param['Eb_sim_std'][..., np.newaxis]
+    Eb_sim_mean_aug = inference_param['Eb_sim_mean'][..., np.newaxis]
 
     log_weight_process  = True
     log_density_process = True
-    all_weights         = []
 
     # ---- sampling from the proposal distribution (Gaussian)
     proposal = multivariate_normal(mean=mu, cov=sigma)
@@ -111,6 +99,8 @@ def compute_importance_sampling(
     Eb_sample = (Eb_sample @ V).T 
 
     # --- enthalpy → temperature (Kelvin) ---
+    # print("Eb_sample shape after projection:", Eb_sample.shape)
+    # print("H shape:", inference_param['H'].shape)
     H_aug    = np.broadcast_to(
         inference_param['H'][..., np.newaxis],
         Eb_sample.shape
@@ -156,8 +146,8 @@ def compute_importance_sampling(
 
     # Normalise weights and diagnostics
     # first divided by the proposal weights
-    weights_vec = weights - log_q                    # (n_total * M,)
-    log_w_vec   = weights_vec if log_weight_process else np.log(weights_vec)
+    weights_vec = weights - log_q                  
+    log_w_vec   = weights_vec
 
     lse_val             = log_sum_exp(log_w_vec)
     normalized_weights  = np.exp(log_w_vec - lse_val)
@@ -166,15 +156,16 @@ def compute_importance_sampling(
     ess                 = float(1.0 / np.sum(normalized_weights ** 2))
     sorted_w            = np.sort(normalized_weights)[::-1]      # descending
 
-    # total_samples = inference_sample_size
-    # print(f"Max normalized weight: {max_weight:.6f}  (should be <<1 for good mixing)")
-    # print(f"Effective sample size (ESS): {ess:.1f} out of {total_samples} "
-    #       f"(should be >10% of M for reliable variance)")
-    # print(f"Max weight:    {max_weight:.6f}")
-    # print(f"Second max weight: {sorted_w[1]:.6f}")
-    # print(f"Weight ratio (max/second): {max_weight / sorted_w[1]:.4f}")
+    print(f"max of log weights: {np.max(weights):.4f}")
+    print(f"max of log proposal weights: {np.max(log_q):.4f}")
+    print(f"Max normalized weight: {max_weight:.6f}  (should be <<1 for good mixing)")
+    print(f"Effective sample size (ESS): {ess:.1f} out of {inference_param['sample_size']} "
+          f"(should be >10% of M for reliable variance)")
+    print(f"Max weight:    {max_weight:.6f}")
+    print(f"Second max weight: {sorted_w[1]:.6f}")
+    print(f"Weight ratio (max/second): {max_weight / sorted_w[1]:.4f}")
 
-    return normalized_weights
+    return normalized_weights, ess
 
 
 
