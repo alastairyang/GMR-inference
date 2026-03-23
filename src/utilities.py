@@ -1,5 +1,87 @@
 import numpy as np
 
+def shape_check(*arrays):
+    """  
+    Check that all input arrays have the same shape.
+
+    Parameters:
+    -------
+    *arrays: list of arrays
+        list of arrays to check
+
+    Raises:
+    -------
+    ValueError: if any two arrays have different shapes
+    """
+    shapes = [arr.shape for arr in arrays]
+    if len(set(shapes)) > 1:
+        raise ValueError("All input arrays must have the same shape, but got shapes: {}".format(shapes))
+
+def reverse_standardize(X, mean, std, method='standard', epsilon=None):
+    """
+    reverse z-score standardization (standard)
+    or with relaxation 
+
+    Parameters:
+-------
+    X: array, shape (n_samples, n_features)
+        standardized data to be reverse standardized
+    mean: array, shape (n_features,)
+        mean used for standardization
+    std: array, shape (n_features,)
+        std used for standardization
+    epsilon: float, optional
+        small value added to std for relaxation method
+    method: str
+        method for reverse standardization, 'standard' or 'relaxation'
+
+    """
+    # first check X, mean, and std have the same shape
+    # or it will do outer product and our computer will EXPLODE SIR
+    shape_check(X, mean, std)
+    if method == 'standard':
+        return X * std + mean
+    elif method == 'relaxation':
+        if epsilon is None:
+            raise ValueError("Epsilon must be provided for relaxation method")
+        else:
+            return X * (std + epsilon) + mean
+    else:
+        raise ValueError("Unknown method: {}".format(method))
+    
+def standardize(X, mean, std, method='standard', epsilon=None):
+    """
+    z-score standardization (standard)
+    or with relaxation 
+
+    Parameters:
+    -------
+    X: array, shape (n_samples, n_features)
+        data to be standardized
+    mean: array, shape (n_features,)
+        mean used for standardization   
+
+    std: array, shape (n_features,)
+        std used for standardization
+    epsilon: float, optional
+        small value added to std for relaxation method
+    method: str
+        method for standardization, 'standard' or 'relaxation'
+
+
+    """
+    # first check X, mean, and std have the same shape
+    # or it will do outer product and our computer will EXPLODE SIR
+    shape_check(X, mean, std)
+    if method == 'standard':
+        return (X - mean) / std
+    elif method == 'relaxation':
+        if epsilon is None:
+            raise ValueError("Epsilon must be provided for relaxation method")
+        else:
+            return (X - mean) / (std + epsilon)
+    else:
+        raise ValueError("Unknown method: {}".format(method))
 # ---------- NOT ACTIVELY USED ----------
 def build_distance_matrix(x, y):
     """
