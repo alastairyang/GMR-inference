@@ -74,11 +74,13 @@ def standardize(X, mean, std, method='standard', epsilon=None):
     # or it will do outer product and our computer will EXPLODE SIR
     shape_check(X, mean, std)
     if method == 'standard':
+        print("Using standard z-score standardization")
         return (X - mean) / std
     elif method == 'relaxation':
         if epsilon is None:
             raise ValueError("Epsilon must be provided for relaxation method")
         else:
+            print("Using relaxation z-score standardization with epsilon =", epsilon)
             return (X - mean) / (std + epsilon)
     else:
         raise ValueError("Unknown method: {}".format(method))
