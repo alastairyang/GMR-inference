@@ -107,8 +107,6 @@ def log_prior_gradient(Eb, gmm):
                   random_state=gmm.random_state)
         
         # Get normalization factor and exponent
-        # norm_factor is the 1/sqrt((2pi)^d |Sigma|) term
-        # exponent is the -0.5 * (x-mu)^T Sigma^{-1} (x-mu) term
         norm_factor, exponent = mvn.to_norm_factor_and_exponents(Eb)
         
         # Log probability of component k (including prior weight)
