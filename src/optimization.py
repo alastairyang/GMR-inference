@@ -305,25 +305,25 @@ def log_prior_hessian(Eb, gmm):
 
         cov_inv = np.linalg.inv(gmm.covariances[k])
         cov_invs.append(cov_inv)
-        diff = (Eb - gmm.means[k]).reshape(-1, 1)          # (d, 1)
-        component_grads[k] = (-cov_inv @ diff).flatten()   # g_k
+        diff = (Eb - gmm.means[k]).reshape(-1, 1)          
+        component_grads[k] = (-cov_inv @ diff).flatten()   
 
     # Responsibilities via log-sum-exp (same as your gradient function)
     max_log_prob    = np.max(component_log_probs)
     responsibilities = np.exp(component_log_probs - max_log_prob)
-    responsibilities /= responsibilities.sum()              # r_k
+    responsibilities /= responsibilities.sum()             
 
     # Hessian assembly
     weighted_hess = np.zeros((n_features, n_features))
     for k in range(n_components):
-        g_k = component_grads[k].reshape(-1, 1)            # (d, 1)
+        g_k = component_grads[k].reshape(-1, 1)           
         weighted_hess += responsibilities[k] * (
-            -cov_invs[k] + g_k @ g_k.T                     # -Σ_k^{-1} + g_k g_k^T
+            -cov_invs[k] + g_k @ g_k.T                    
         )
 
     # Subtract outer product of the total gradient
     mean_grad = (responsibilities[:, np.newaxis] * component_grads).sum(axis=0)
-    weighted_hess -= np.outer(mean_grad, mean_grad)         # - (Σ r_k g_k)(Σ r_k g_k)^T
+    weighted_hess -= np.outer(mean_grad, mean_grad)         
 
     return weighted_hess
 
@@ -362,7 +362,7 @@ def log_posterior_hessian(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, 
     return likelihood_hessian + prior_hessian
 
 
-def finite_difference_check(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, epsilon=1e-5):
+def finite_difference_check(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon, epsilon=1e-5):
     """  
     Perform finite difference check for the log posterior gradient.
 
@@ -403,8 +403,8 @@ def finite_difference_check(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df
         Eb_star_plus[i] += epsilon
         Eb_star_minus[i] -= epsilon
         
-        log_post_plus = log_posterior(Eb_star_plus, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df)
-        log_post_minus = log_posterior(Eb_star_minus, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df)
+        log_post_plus = log_posterior(Eb_star_plus, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon)
+        log_post_minus = log_posterior(Eb_star_minus, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon)
         
         finite_diff_grad[i] = (log_post_plus - log_post_minus) / (2 * epsilon)
     
