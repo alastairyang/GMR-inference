@@ -180,3 +180,41 @@ def build_decorr_weight_matrix(X_vec, combined_idx):
 
     weight_mtx = redundancy_weights(sim_mtx)
     return weight_mtx, sim_mtx
+
+def low_high_percentile(samples, log_probs, low_percentile=5, high_percentile=95):
+    """
+    Compute the low and high percentiles of the samples based on their log probabilities.
+
+    Parameters:
+    -------
+    samples: array, shape (n_samples, n_features)
+        MCMC samples
+    log_probs: array, shape (n_samples,)
+        Log probabilities of the samples
+    low_percentile: float
+        Percentile for the lower bound (default: 5)
+    high_percentile: float
+        Percentile for the upper bound (default: 95)
+
+    Returns:
+    -------
+    low_bound: array, shape (n_features,)
+        Low percentile bound of the samples
+    high_bound: array, shape (n_features,)
+        High percentile bound of the samples
+    """
+    # Sort samples by log probability (ascending)
+    sorted_indices = np.argsort(log_probs) 
+    samples_sorted = samples[sorted_indices]
+    log_probs_sorted = log_probs[sorted_indices]
+
+    lp_low  = np.percentile(log_probs_sorted, low_percentile)
+    lp_high = np.percentile(log_probs_sorted, high_percentile)
+
+    # the single representative samples closest to each threshold
+    idx_low  = np.argmin(np.abs(log_probs_sorted - lp_low))
+    idx_high = np.argmin(np.abs(log_probs_sorted - lp_high))
+
+    low_bound = samples_sorted[idx_low]  
+    high_bound = samples_sorted[idx_high]  
+    return low_bound, high_bound
