@@ -4,3 +4,5 @@
 *.tif
 data
 *.npz
+*.pkl
+*.npy
