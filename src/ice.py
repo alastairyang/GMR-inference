@@ -90,6 +90,10 @@ def computeGlenFlowRateParameter(T):
 
     return Aglen
 
+def driving_stress(alpha, H):
+    rho_i = 917  # kg/m³
+    g = 9.81     # m/s²
+    return rho_i * g * H * alpha
 
 def delta_driving_stress(delta_alpha, H):
     rho_i = 917  # kg/m³
