@@ -16,25 +16,42 @@ import time
 import torch
 
 class model:
-    def __init__(self):
+    def __init__(self, extent=None, coord=None):
+        self.extent = extent
+        self.coord = coord
 
+        # in our naming convention, '_ori' means standardized but not reduced (original dimension)
+        # 'reduced' means the dimension has been reduced by PCA.
         self.X_ori = None
         self.Y_ori = None
+        # standardization data (from simulation ensemble)
+        self.X_mean = None 
+        self.X_std = None
+        self.Y_mean = None
+        self.Y_std = None
+        self.X_epsilon = None # relaxed standardization
+        self.Y_epsilon = None # relaxed standardization
+        # observation data
+        self.Y_obs_ori = None
+        # mask
+        self.flight_mask = None
+        self.domain_mask = None
+
         self.X_reduced = None # PCA reduction
         self.Y_reduced = None
         self.random_state = check_random_state(42)
 
-        # pca model: for (inverse) transformation
-        self.pca_y = None
-        self.pca_x = None
-
         # join distribution data
         self.XY_train       = None
-        self.XY_validation = None
+        self.XY_validation  = None
         self.XY_test        = None
 
+        # models
+        self.pca_y = None
+        self.pca_x = None
         self.gmm = None
 
+        # dimension and indices
         self.nx = None
         self.ny = None
         self.ndim_ori     = None
@@ -48,7 +65,7 @@ class model:
         self.n_samples_train      = None
         pass
 
-    def load_data(self, X, Y, mask=None, show_plot=True):
+    def load_sim_data(self, X, Y, domain_mask = None, flight_mask=None, show_plot=True):
         """ 
         Load the simulation data. We assume that these data have been standardized.
         
@@ -58,8 +75,10 @@ class model:
             The input features. Assuming input data are 2D data ensemble. 
         Y: ndarray of shape (nx, ny, n_channel, n_features)
             The output features.
-        mask: ndarray of shape (nx, ny, n_channel, n_features), optional
-            Boolean mask indicating the valid data point in a spatial domain. 
+        domain_mask: ndarray of shape (nx, ny, n_channel, n_features), optional
+            Boolean mask indicating the valid data point in the simulation domain (continuous).
+        flight_mask: ndarray of shape (nx, ny, n_channel, n_features), optional
+            Boolean mask indicating the valid data point in a flight domain (discrete flight tracks).
         show_plot: bool, optional
             Whether to show the plot of the data.
         """
@@ -75,7 +94,8 @@ class model:
             for i, idx in enumerate(random_indices):
                 plt.subplot(2, 5, i + 1)
                 X_plot = X[:, :, :, idx].copy()
-                X_plot[mask == 0] = np.nan # set the values outside the model boundary to NaN for better visualization
+                if domain_mask is not None:
+                    X_plot[domain_mask == False] = np.nan # set the values outside the model boundary to NaN for better visualization
                 plt.imshow(X_plot, cmap='viridis', vmin = -2, vmax = 2)
                 plt.gca().invert_yaxis()
                 plt.gca().axis('off')
@@ -83,9 +103,9 @@ class model:
                 # plt.colorbar()
             for i, idx in enumerate(random_indices):
                 plt.subplot(2, 5, i + 6)
-                
                 Y_plot = Y[:, :, 0, idx].copy()  
-                Y_plot[mask == 0] = np.nan
+                if domain_mask is not None:
+                    Y_plot[domain_mask == False] = np.nan
                 
                 plt.imshow(Y_plot, cmap='viridis', vmin=-2, vmax=2)
                 plt.gca().invert_yaxis()
@@ -96,6 +116,58 @@ class model:
 
         self.X_ori = X.reshape((self.nx * self.ny * self.n_channel, self.n_samples_total)).T
         self.Y_ori = Y.reshape((self.nx * self.ny * self.n_channel, self.n_samples_total)).T
+
+        self.domain_mask = domain_mask
+        self.flight_mask = flight_mask
+        return 
+    
+    def load_obs_data(self, Y_obs, show_plot=True):
+        """  
+        Load the observation data.
+        """
+        Y_obs_standardized = standardize(Y_obs, self.Y_mean, self.Y_std,
+                                         method='relaxation',
+                                         epsilon=self.Y_epsilon)
+        
+        self.Y_obs_ori = Y_obs_standardized
+        if show_plot:
+            plt.figure(figsize=(20, 6))
+            plt.subplot(1, 3, 1)
+            plt.imshow(Y_obs_standardized, cmap='bwr', vmin=-5, vmax=5)
+            plt.title('Standardized Observed Ns')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+
+            # second plot: histogram of the standardized observed Ns
+            plt.subplot(1, 3, 2)
+            plt.hist(Y_obs_standardized[self.flight_mask].flatten(), bins=50, color='blue', alpha=0.7)
+            plt.xlim(-15, 15)
+            # plot y line at x = 0
+            plt.axvline(x=0, color='red', linestyle='--')
+            plt.title('Histogram of Standardized Observed Ns (Flightline Masked)')
+            plt.xlabel('Standardized Ns Value')
+            plt.ylabel('Frequency')
+
+            plt.subplot(1, 3, 3)
+            plt.imshow(Y_obs, cmap='viridis', vmin=0, vmax=30)
+            plt.title('Observed Attenuation Rate')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+            plt.show()
+
+        return
+    
+    def load_standardization_data(self, X_mean, X_std, Y_mean, Y_std, X_epsilon=None, Y_epsilon=None):
+        """
+        Load the standardization data (mean, std) from the simulation ensemble
+          -> Going between standardized space and the physical space
+        """
+        self.X_mean = X_mean
+        self.X_std = X_std
+        self.Y_mean = Y_mean
+        self.Y_std = Y_std
+        self.X_epsilon = X_epsilon
+        self.Y_epsilon = Y_epsilon
         return 
     
     def reduce(self, n_component_x, n_component_y):
@@ -177,7 +249,10 @@ class model:
         return 
 
     def plot_gmm_samples(self, n_samples=3):
-        # test first three samples from the test set and visualize the prediction
+        """   
+        Visualize GMM predictions from random test samples. Default to 3 samples. 
+        
+        """
         n_test_samples_plot = 3 
         rand_idx = np.random.choice(range(self.n_samples_test), size=n_test_samples_plot, replace=False)
         for i in rand_idx:
