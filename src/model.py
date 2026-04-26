@@ -12,6 +12,7 @@ from gmr import GMM
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 import numpy as np
+import time
 import torch
 
 class model:
@@ -23,12 +24,23 @@ class model:
         self.Y_reduced = None
         self.random_state = check_random_state(42)
 
+        # pca model: for (inverse) transformation
+        self.pca_y = None
+        self.pca_x = None
+
+        # join distribution data
+        self.XY_train       = None
+        self.XY_validation = None
+        self.XY_test        = None
+
         self.gmm = None
 
         self.nx = None
         self.ny = None
         self.ndim_ori     = None
-        self.ndim_reduced = None
+        self.ndim_reduced_total = None
+        self.ndim_reduced_x     = None
+        self.ndim_reduced_y     = None
         self.n_channel = 1
         self.n_samples_total      = None
         self.n_samples_validation = None
@@ -101,15 +113,143 @@ class model:
         pca_y = PCA(n_components=n_component_y)
         self.X_reduced = pca_x.fit_transform(self.X_ori)
         self.Y_reduced = pca_y.fit_transform(self.Y_ori)
+        self.pca_x = pca_x
+        self.pca_y = pca_y
+
+        self.ndim_reduced_total = n_component_x + n_component_y
+        self.ndim_reduced_x     = n_component_x
+        self.ndim_reduced_y     = n_component_y
         return
     
+    def data_split(self, train_ratio=0.8, validation_ratio=0.1, test_ratio=0.1):
+        """ 
+        Split the data into training, validation, and test sets.
+        
+        Parameters
+        ----------
+        train_ratio: float
+            The ratio of the training set.
+        validation_ratio: float
+            The ratio of the validation set.
+        test_ratio: float
+            The ratio of the test set.
+        """
+        assert train_ratio + validation_ratio + test_ratio == 1.0, "The sum of the ratios must be 1."
+        
+        n_train = int(self.n_samples_total * train_ratio)
+        n_validation = int(self.n_samples_total * validation_ratio)
+        n_test = self.n_samples_total - n_train - n_validation
+
+        self.n_samples_train = n_train
+        self.n_samples_validation = n_validation
+        self.n_samples_test = n_test
+
+        XY_reduced = np.hstack((self.X_reduced, self.Y_reduced))
+        indices = np.arange(self.n_samples_total)
+        self.random_state.shuffle(indices)
+
+        self.XY_train = XY_reduced[indices[:n_train]]
+        self.XY_validation = XY_reduced[indices[n_train:n_train + n_validation]]
+        self.XY_test = XY_reduced[indices[n_train + n_validation:]]
+
+        print("Shape of XY_train:", self.XY_train.shape)
+        print("Shape of XY_validation:", self.XY_validation.shape)
+        print("Shape of XY_test:", self.XY_test.shape)
+        return
     def train_gmm(self, n_components):
         """ 
         Train a Gaussian Mixture Model on the joint distribution of X, Y in their latent space
+        The joint Probability is combined in (Y, X) order
 
         Parameters
         ----------
+        n_components: int
+            The number of components for the Gaussian Mixture Model.
         """
+        gmm = GMM(n_components=n_components, random_state=self.random_state)
+
+        start_time = time.time()
+        gmm.from_samples(self.XY_train)
+        end_time = time.time()
+        training_time = end_time - start_time
+        print(f"GMM training completed in {training_time:.2f} seconds.")
+        self.gmm = gmm
+        return 
+
+    def plot_gmm_samples(self, n_samples=3):
+        # test first three samples from the test set and visualize the prediction
+        n_test_samples_plot = 3 
+        rand_idx = np.random.choice(range(self.n_samples_test), size=n_test_samples_plot, replace=False)
+        for i in rand_idx:
+            y_test = self.XY_test[i, :self.ndim_reduced_y]  # Y part
+            x_test = self.XY_test[i, self.ndim_reduced_y:]  # X part
+
+            # Predict X given Y
+            condition_index = np.arange(self.ndim_reduced_y)
+            x_pred_gmm = self.gmm.condition(condition_index, y_test)
+
+            # sample from this conditional distribution to get uncertainty
+            n_uq_sample = 400
+            x_uq_samples = x_pred_gmm.sample(n_uq_sample)
+            x_uq_samples_ori = np.zeros((256*256, n_uq_sample))
+            # Inverse transform to original space
+            # then the uq samples
+            for j, sample in enumerate(x_uq_samples):
+                x_uq_samples_ori[:,j] = self.pca_x.inverse_transform(sample)
+
+            # compute the mean from the ensemble
+            x_pred_mean = np.mean(x_uq_samples_ori, axis=1)
+            x_pred_img = x_pred_mean.reshape(256, 256)
+            
+            # compute std along each dimension of the uq samples
+            x_uq_std = np.std(x_uq_samples_ori, axis=1)
+            x_uq_std = x_uq_std.reshape(256, 256)
+
+            # Reshape X for visualization
+            x_test_original = self.pca_x.inverse_transform(x_test.reshape(1, -1))
+            x_test_img = x_test_original.reshape(256, 256)
+
+            # observed Y
+            obs_Y = self.pca_y.inverse_transform(y_test)
+            obs_Y = obs_Y.reshape(256, 256)
+            # Plotting: five columns: observed Y, True X, predicted X, error (RMSE), uncertainty (stddev)
+            plt.figure(figsize=(24, 4))
+            plt.subplot(1, 5, 1)
+            plt.imshow(obs_Y, cmap='bwr', vmin=-2, vmax=2)
+            plt.title('Observed Y')
+            plt.colorbar()
+            # invert y axis
+            plt.gca().invert_yaxis()
+
+            plt.subplot(1, 5, 2)
+            plt.imshow(x_test_img, cmap='bwr', vmin=-2, vmax=2)
+            plt.title('True X')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+
+            plt.subplot(1, 5, 3)
+            plt.imshow(x_pred_img, cmap='bwr', vmin=-2, vmax=2)
+            plt.title('Predicted X')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+            
+            plt.subplot(1, 5, 4)
+            rmse_img = np.sqrt((x_test_img - x_pred_img) ** 2)
+            plt.imshow(rmse_img, cmap='hot', vmin = 0, vmax = 1)
+            plt.title('RMSE')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+
+            plt.subplot(1, 5, 5)
+            plt.imshow(x_uq_std, cmap='hot', vmin = 0, vmax = 1)
+            plt.title('Uncertainty (stddev)')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+
+            plt.suptitle(f'Test Sample {i+1}')
+            # save the figure, dpi = 300
+            plt.show()
+
     def pca_scree(self, n_component_x, n_component_y):
         """ 
         Perform PCA on the input data and plot the scree plot.
@@ -174,7 +314,7 @@ class model:
             X_sample = self.X_ori[idx].reshape(self.nx, self.ny, self.n_channel)
             X_recon_sample = X_recon[idx].reshape(self.nx, self.ny, self.n_channel)
             residue = X_sample - X_recon_sample
-            plt.imshow(residue[:, :, 0], cmap='bwr', vmin = -1, vmax = 1)
+            plt.imshow(residue[:, :, 0], cmap='bwr', vmin = -2, vmax = 2)
             plt.title(f'X difference {idx}')
             plt.gca().invert_yaxis()
             plt.colorbar()
@@ -201,7 +341,7 @@ class model:
             Y_sample = self.Y_ori[idx].reshape(self.nx, self.ny, self.n_channel)
             Y_recon_sample = Y_recon[idx].reshape(self.nx, self.ny, self.n_channel)
             residue = Y_sample - Y_recon_sample
-            plt.imshow(residue[:, :, 0], cmap='bwr', vmin = -1, vmax = 1)
+            plt.imshow(residue[:, :, 0], cmap='bwr', vmin = -2, vmax = 2)
             plt.title(f'Y difference {idx}')
             plt.gca().invert_yaxis()
             plt.colorbar()
