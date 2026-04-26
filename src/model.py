@@ -17,6 +17,12 @@ import time
 import torch
 
 class model:
+    """ Latent space Bayesian inference model for ice sheet basal temperature estimation
+    
+    Author: Donglai Yang
+    Affiliation: Georgia Institute of Technology
+    Date: 2026-04-26
+    """
     def __init__(self, extent=None, coord=None):
         self.extent = extent
         self.coord = coord
@@ -51,6 +57,7 @@ class model:
         self.pca_y = None
         self.pca_x = None
         self.gmm = None
+        self.gmm_prop = None # after pushforward (~prior under obs)
 
         # dimension and indices
         self.nx = None
@@ -249,7 +256,7 @@ class model:
         self.gmm = gmm
         return 
     
-    def derive_prior(self, beta=0.1, lambda1=1, lambda2=1):
+    def derive_prior(self, beta=0.1, lambda1=1, lambda2=1, show_plot=True):
         """
         Derive the prior P(X) -- under Y_obs -- from the joint P(X,Y)
         This involves two steps:
@@ -266,7 +273,8 @@ class model:
             weight for Y variance from simulation in the covariance estimation
         """
         # find mean and covariance
-        z_optimal = self.compute_optimal_Y_in_latent(beta=beta)
+        z_optimal, residual_latent = self.compute_optimal_Y_in_latent(beta=beta)
+
         residual_latent = residual_latent.reshape(-1, 1)  # shape (ndim_reduced_y, 1)
         residual_latent_outer = residual_latent @ residual_latent.T  # shape (ndim_reduced_y, ndim_reduced_y)
         variance_latent = np.diag(self.pca_y.explained_variance_)  # shape (ndim_reduced_y, ndim_reduced_y)
@@ -279,7 +287,68 @@ class model:
         print("min eigenvalue:", eigvals.min())  # must be > 0
 
         # assign mean value
-        mu_obbs_latent = z_optimal
+        mu_obs_latent = z_optimal
+
+        # propagate the observational uncertainty through the GMM to get the uncertainty in X
+        gmm_propagated = propagate_uncertainty(mu_obs_latent.T,
+                                               cov_obs_latent,
+                                               self.gmm, 
+                                               np.arange(self.ndim_reduced_y), 
+                                               self.XY_train[:,:self.ndim_reduced_y])
+
+        self.gmm_prop = gmm_propagated
+
+        if show_plot:
+            # sample from gmm_propagated to get the distribution of X
+            n_samples = 300
+            X_samples = gmm_propagated.sample(n_samples)
+            X_samples_ori = np.zeros((self.ndim_ori, n_samples))
+            for i, sample in enumerate(X_samples):
+                X_samples_ori[:,i] = self.pca_x.inverse_transform(sample)
+
+            # sample from un-propagated model for comparison
+            print("shape of mu_obs_latent:", mu_obs_latent.shape)
+            gmm_unpropagated = self.gmm.condition(np.arange(self.ndim_reduced_y), mu_obs_latent.flatten())
+            X_samples_unprop = gmm_unpropagated.sample(n_samples)
+            X_samples_unprop_ori = np.zeros((self.ndim_ori, n_samples))
+            for i, sample in enumerate(X_samples_unprop):
+                X_samples_unprop_ori[:,i] = self.pca_x.inverse_transform(sample)
+
+            # visualize the mean and variance
+            X_samples_mean = np.mean(X_samples_ori, axis=1).reshape(self.nx, self.ny)
+            X_samples_std = np.std(X_samples_ori, axis=1).reshape(self.nx, self.ny)
+            X_samples_mean[self.domain_mask == False] = np.nan
+            X_samples_std[self.domain_mask == False] = np.nan
+
+            plt.figure(figsize=(12, 10))
+            plt.subplot(2, 2, 3)
+            plt.imshow(X_samples_mean, cmap='bwr', vmin=-5, vmax=5)
+            plt.title('Mean of $E_b$ (Obs. propagated)')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+            plt.subplot(2, 2, 4)
+            plt.imshow(X_samples_std, cmap='hot', vmin=0, vmax=5)
+            plt.title('Std of $E_b$ (Obs. propagated)')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+
+            X_samples_mean = np.mean(X_samples_unprop_ori, axis=1).reshape(self.nx, self.ny)
+            X_samples_std = np.std(X_samples_unprop_ori, axis=1).reshape(self.nx, self.ny)
+            X_samples_mean[self.domain_mask == False] = np.nan
+            X_samples_std[self.domain_mask == False] = np.nan
+            plt.subplot(2, 2, 1)
+            plt.imshow(X_samples_mean, cmap='bwr', vmin=-5, vmax=5)
+            plt.title('Mean of $E_b$ (Unpropagated)')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+            plt.subplot(2, 2, 2)
+            plt.imshow(X_samples_std, cmap='hot', vmin=0, vmax=5)
+            plt.title('Std of $E_b$ (Unpropagated)')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+
+            # plt.suptitle('Uncertainty Propagation through GMM')
+            plt.show()
         return 
 
     def compute_optimal_Y_in_latent(self, beta=0.1):
@@ -367,6 +436,9 @@ class model:
 
         Y_obs_reconstructed_optimal = z_optimal @ self.pca_y.components_
         Y_obs_reconstructed_optimal_img = Y_obs_reconstructed_optimal.reshape(self.nx, self.ny)
+        residual = self.Y_obs_ori.flatten() - Y_obs_reconstructed_optimal
+        residual_latent = self.pca_y.transform(residual.reshape(1, -1)).flatten()
+        residual_recon = self.pca_y.inverse_transform(residual_latent.reshape(1, -1)).reshape(self.nx, self.ny)
 
         plt.figure(figsize=(20, 6))
         plt.subplot(1,3,1)
@@ -380,16 +452,14 @@ class model:
         plt.colorbar()
         plt.gca().invert_yaxis()
         # projecting the residue to PCA space and show the reconstruction
-        residual = self.Y_obs_ori.flatten() - Y_obs_reconstructed_optimal
-        residual_latent = self.pca_y.transform(residual.reshape(1, -1)).flatten()
-        residual_recon = self.pca_y.inverse_transform(residual_latent.reshape(1, -1)).reshape(self.nx, self.ny)
         plt.subplot(1,3,3)
         plt.imshow(residual_recon, cmap='bwr', vmin=-2, vmax=2)
         plt.title('PCA Reconstruction of Residual')
         plt.colorbar()
         plt.gca().invert_yaxis()
         plt.show()
-        return z_optimal
+        return z_optimal, residual_latent
+    
     def plot_gmm_samples(self, n_samples=3):
         """   
         Visualize GMM predictions from random test samples. Default to 3 samples. 
