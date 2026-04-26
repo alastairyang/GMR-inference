@@ -1,16 +1,17 @@
 from src.amortization import form_obs_cov_col, build_spatial_covariance_operator, sample_from_spatial_cov, pushforward, propagate_uncertainty
 from src.amortization import compute_conditional_expected_val, compute_conditional_std_val_latent
 from src.utilities import standardize
-from src.optimization import log_prior_gradient
-from src.optimization import log_posterior_gradient, log_posterior, log_posterior_hessian
+from src.optimization import log_prior_gradient, log_posterior_gradient, log_posterior, log_posterior_hessian
 from src.optimization import finite_difference_check
 from src.ice import compute_pmp, enthalpy_to_temperature
 
 from gmr.utils import check_random_state
 from gmr import GMM
+from scipy.optimize import minimize, Bounds
 
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 import numpy as np
 import time
 import torch
@@ -228,7 +229,7 @@ class model:
         print("Shape of XY_validation:", self.XY_validation.shape)
         print("Shape of XY_test:", self.XY_test.shape)
         return
-    def train_gmm(self, n_components):
+    def train_gmm_XY(self, n_components):
         """ 
         Train a Gaussian Mixture Model on the joint distribution of X, Y in their latent space
         The joint Probability is combined in (Y, X) order
@@ -247,7 +248,148 @@ class model:
         print(f"GMM training completed in {training_time:.2f} seconds.")
         self.gmm = gmm
         return 
+    
+    def derive_prior(self, beta=0.1, lambda1=1, lambda2=1):
+        """
+        Derive the prior P(X) -- under Y_obs -- from the joint P(X,Y)
+        This involves two steps:
+            1. Finding the optimal Y in the latent space, both mu_Y_obs and sigma_Y_obs
+            2. Then pushforward, \int P(X|Y) P(Y_obs) dY 
+        
+        Parameters
+        ----------
+        beta: float
+            Prefactor in the objective function 
+        lambda1: float
+            weight for data residual term in the covariance estimation
+        lambda2: float
+            weight for Y variance from simulation in the covariance estimation
+        """
+        # find mean and covariance
+        z_optimal = self.compute_optimal_Y_in_latent(beta=beta)
+        residual_latent = residual_latent.reshape(-1, 1)  # shape (ndim_reduced_y, 1)
+        residual_latent_outer = residual_latent @ residual_latent.T  # shape (ndim_reduced_y, ndim_reduced_y)
+        variance_latent = np.diag(self.pca_y.explained_variance_)  # shape (ndim_reduced_y, ndim_reduced_y)
 
+        cov_obs_latent = lambda1 * residual_latent_outer + lambda2 * variance_latent
+        print("first 5x5 block of cov_obs_latent:")
+        print(cov_obs_latent[:4, :4])
+        # Should be positive definite — all eigenvalues > 0
+        eigvals = np.linalg.eigvalsh(cov_obs_latent)
+        print("min eigenvalue:", eigvals.min())  # must be > 0
+
+        # assign mean value
+        mu_obbs_latent = z_optimal
+        return 
+
+    def compute_optimal_Y_in_latent(self, beta=0.1):
+        """  
+        Solve the optimization problem with regularization to find the optimal Y in the latent space
+        """
+        def objective_scaled(z_scaled, Y_obs, V, beta):
+            """Objective in scaled z space — avoids scaler transform inside loop."""
+            z_orig = scaler.inverse_transform(z_scaled.reshape(1, -1)).flatten()
+            
+            # Likelihood term (in original space)
+            residual = Y_obs - z_orig @ V
+            likelihood_term = np.mean(residual**2)
+            
+            # Prior term (directly in scaled space — no transform needed)
+            density = gmm_latent.to_probability_density(z_scaled.reshape(1, -1))
+            if density <= 0:
+                prior_term = 1e6
+            else:
+                prior_term = -np.log(float(density))
+            print(f" Likelihood: {likelihood_term/beta:.3f}, Prior: {prior_term:.3f}")
+            return likelihood_term / beta + prior_term
+        def gradient_scaled(z_scaled, Y_obs, V, beta):
+            # --- Likelihood gradient (analytical) ---
+            z_orig = scaler.inverse_transform(z_scaled.reshape(1, -1)).flatten()
+            residual = Y_obs - z_orig @ V
+            grad_lik_orig = -2 * (residual @ V.T) / len(Y_obs)
+            grad_lik_scaled = grad_lik_orig * scaler.scale_
+
+            # --- Prior gradient (central differences) ---
+            eps = 1e-4
+            grad_prior = np.zeros_like(z_scaled)
+            for i in range(len(z_scaled)):
+                z_plus = z_scaled.copy();  z_plus[i] += eps
+                z_minus = z_scaled.copy(); z_minus[i] -= eps
+                f_plus  = -np.log(float(gmm_latent.to_probability_density(z_plus.reshape(1,-1)))  + 1e-300)
+                f_minus = -np.log(float(gmm_latent.to_probability_density(z_minus.reshape(1,-1))) + 1e-300)
+                grad_prior[i] = (f_plus - f_minus) / (2 * eps)
+
+            return grad_lik_scaled / beta + grad_prior
+
+        gmm_latent = GMM(n_components=4, random_state=np.random.RandomState(42))
+        y_latent_all = self.pca_y.transform(self.Y_ori)
+
+        n_latent_samples = y_latent_all.shape[0]
+        indices = np.arange(n_latent_samples)
+        local_rng = np.random.RandomState(42)  # fixed, isolated seed
+        local_rng.shuffle(indices)
+
+        split_point = int(0.8 * n_latent_samples)
+        train_indices = indices[:split_point]
+        test_indices = indices[split_point:]
+        y_latent_train = y_latent_all[train_indices]
+        y_latent_test = y_latent_all[test_indices]
+        scaler = StandardScaler()
+        y_latent_train_scaled = scaler.fit_transform(y_latent_train)
+        y_latent_test_scaled  = scaler.transform(y_latent_test)
+        # train
+        gmm_latent.from_samples(y_latent_train_scaled)
+
+        # initial state for the optimization 
+        best_k = np.argmax(gmm_latent.priors)
+        z_init_scaled = gmm_latent.means[best_k].copy()
+        print(f"Density at init: {gmm_latent.to_probability_density(z_init_scaled.reshape(1,-1))}")
+
+        # Bounds in scaled space: ±5 std (which is just ±5 since data is standardized)
+        lb_scaled = np.full(self.ndim_reduced_y, -5.0)
+        ub_scaled = np.full(self.ndim_reduced_y,  5.0)
+
+        result = minimize(objective_scaled, z_init_scaled,
+                  args=(self.Y_obs_ori.flatten(), self.pca_y.components_, beta),
+                  jac=gradient_scaled,
+                  method='L-BFGS-B',
+                  bounds=Bounds(lb_scaled, ub_scaled))
+
+        # Convert optimal back to original space
+        z_optimal_scaled = result.x
+        z_optimal = scaler.inverse_transform(z_optimal_scaled.reshape(1, -1)).flatten()
+        print("Optimization success:", result.success)
+
+        print(result.message)
+        print(f"Iterations: {result.nit}")
+        print(f"Function evaluations: {result.nfev}")
+        print(f"Final objective: {result.fun:.4f}")
+
+        Y_obs_reconstructed_optimal = z_optimal @ self.pca_y.components_
+        Y_obs_reconstructed_optimal_img = Y_obs_reconstructed_optimal.reshape(self.nx, self.ny)
+
+        plt.figure(figsize=(20, 6))
+        plt.subplot(1,3,1)
+        plt.imshow(Y_obs_reconstructed_optimal_img, cmap='bwr', vmin=-2, vmax=2)
+        plt.title('Reconstructed Observed Y from Optimized Latent z')
+        plt.colorbar()
+        plt.gca().invert_yaxis()
+        plt.subplot(1,3,2)
+        plt.imshow(self.Y_obs_ori.reshape(self.nx, self.ny), cmap='bwr', vmin=-2, vmax=2)
+        plt.title('Original Mean of Observed Y')
+        plt.colorbar()
+        plt.gca().invert_yaxis()
+        # projecting the residue to PCA space and show the reconstruction
+        residual = self.Y_obs_ori.flatten() - Y_obs_reconstructed_optimal
+        residual_latent = self.pca_y.transform(residual.reshape(1, -1)).flatten()
+        residual_recon = self.pca_y.inverse_transform(residual_latent.reshape(1, -1)).reshape(self.nx, self.ny)
+        plt.subplot(1,3,3)
+        plt.imshow(residual_recon, cmap='bwr', vmin=-2, vmax=2)
+        plt.title('PCA Reconstruction of Residual')
+        plt.colorbar()
+        plt.gca().invert_yaxis()
+        plt.show()
+        return z_optimal
     def plot_gmm_samples(self, n_samples=3):
         """   
         Visualize GMM predictions from random test samples. Default to 3 samples. 
@@ -274,19 +416,19 @@ class model:
 
             # compute the mean from the ensemble
             x_pred_mean = np.mean(x_uq_samples_ori, axis=1)
-            x_pred_img = x_pred_mean.reshape(256, 256)
+            x_pred_img = x_pred_mean.reshape(self.nx, self.ny)
             
             # compute std along each dimension of the uq samples
             x_uq_std = np.std(x_uq_samples_ori, axis=1)
-            x_uq_std = x_uq_std.reshape(256, 256)
+            x_uq_std = x_uq_std.reshape(self.nx, self.ny)
 
             # Reshape X for visualization
             x_test_original = self.pca_x.inverse_transform(x_test.reshape(1, -1))
-            x_test_img = x_test_original.reshape(256, 256)
+            x_test_img = x_test_original.reshape(self.nx, self.ny)
 
             # observed Y
             obs_Y = self.pca_y.inverse_transform(y_test)
-            obs_Y = obs_Y.reshape(256, 256)
+            obs_Y = obs_Y.reshape(self.nx, self.ny)
             # Plotting: five columns: observed Y, True X, predicted X, error (RMSE), uncertainty (stddev)
             plt.figure(figsize=(24, 4))
             plt.subplot(1, 5, 1)
