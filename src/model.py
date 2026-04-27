@@ -4,10 +4,13 @@ from src.utilities import standardize
 from src.optimization import log_prior_gradient, log_posterior_gradient, log_posterior, log_posterior_hessian
 from src.optimization import finite_difference_check
 from src.ice import compute_pmp, enthalpy_to_temperature
+from src.hamiltonianMC import CustomEnergy
 
 from gmr.utils import check_random_state
 from gmr import GMM
 from scipy.optimize import minimize, Bounds
+
+import pyro.infer.mcmc as mcmc
 
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
@@ -61,10 +64,19 @@ class model:
         self.XY_test        = None
 
         # models
-        self.pca_y = None
-        self.pca_x = None
-        self.gmm = None
+        self.pca_y    = None
+        self.pca_x    = None
+        self.gmm      = None
         self.gmm_prop = None # after pushforward (~prior under obs)
+
+        # results
+        self.X_MAP       = None
+        self.Tb_MAP      = None
+        self.hessian_MAP = None
+        self.Tb_p5       = None
+        self.Tb_p95      = None
+        self.Tb_std      = None
+        self.Tb_mean     = None
 
         # dimension and indices
         self.nx = None
@@ -548,7 +560,7 @@ class model:
         plt.show()
         return z_optimal, residual_latent
     
-    def compute_MAP(self, beta=1, n_iter=20, show_plot=True):
+    def compute_MAP(self, beta=1, n_iter=20, lr=0.5, show_trajectory=False):
         """ 
         Compute the Maximum A Posteriori
         """
@@ -574,18 +586,9 @@ class model:
         # start the optimization using L-BFGS
         n_iter = 20
         X = init_Eb_reduced.clone().requires_grad_(True)
-        optimizer = optim.LBFGS([X], lr=0.5, max_iter=n_iter)
+        optimizer = optim.LBFGS([X], lr=lr, max_iter=n_iter)
 
         saved_snapshots = []
-
-        # print shapes
-        print("Shape of X:", X.shape)
-        print("Shape of Tpmp:", Tpmp.shape)
-        print("Shape of dw:", dw.shape)
-        print("Shape of df:", df.shape)
-        print("Shape of Eb_mean_data:", Eb_mean_data.shape)
-        print("Shape of Eb_std_data:", Eb_std_data.shape)
-
         def closure():
             """ closure function for L-BFGS optimizer
             """
@@ -660,10 +663,14 @@ class model:
         Eb_MAP = self.pca_x.inverse_transform(X_optimized.reshape(1, -1)).reshape(self.nx, self.ny)
         Eb_MAP_ori = torch.from_numpy(Eb_MAP * Eb_std_data.reshape(self.nx, self.ny) + Eb_mean_data.reshape(self.nx, self.ny))
         Tb_MAP = enthalpy_to_temperature(Eb_MAP_ori.flatten(), Tpmp.flatten()).reshape(self.nx, self.ny).numpy()
-
-        # reverse standardize and back to temperature 
-        plt.figure(figsize=(6, 10))
         Tb_MAP[self.domain_mask == False] = np.nan
+
+        # add
+        self.Tb_MAP = Tb_MAP
+        self.hessian_MAP = hessian
+        self.X_MAP = X_optimized
+
+        plt.figure(figsize=(6, 10))
         plt.subplot(2, 1, 1)
         plt.imshow(Tb_MAP, cmap='RdBu_r', vmin=255, vmax=273.15)
         plt.title('MAP Estimate of E_b')
@@ -678,8 +685,183 @@ class model:
         plt.colorbar()
         plt.gca().invert_yaxis()
         plt.show()
+
+        if show_trajectory:
+            # plot all the snapshots to see the optimization trajectory
+            n_snapshots = len(saved_snapshots)
+            plt.figure(figsize=(20, 6))
+            for i, snapshot in enumerate(saved_snapshots):
+                Eb_snapshot = self.pca_x.inverse_transform(snapshot.reshape(1, -1)).reshape(256, 256)
+                Eb_snapshot_ori = torch.from_numpy(Eb_snapshot * Eb_std_data.reshape(256, 256) + Eb_mean_data.reshape(256, 256))
+                Tb_snapshot = enthalpy_to_temperature(Eb_snapshot_ori.flatten(), Tpmp.flatten()).reshape(256, 256)
+                plt.subplot(2, n_snapshots//2, i+1)
+                plt.imshow(Tb_snapshot * self.domain_mask, cmap='RdBu_r', vmin=250, vmax=273.15)
+                
+                plt.title(f'Iteration {i+1}')
+                plt.colorbar()
+                plt.gca().invert_yaxis()
+            plt.suptitle('Optimization Trajectory of T_b')
+            plt.show()
         return
     
+    def derive_posterior(self):
+        """
+        Derive the posterior distribution with Hamiltonian Monte Carlo
+        """
+
+        H_pot = torch.tensor(-self.hessian_MAP, dtype=torch.float64)
+        # stable matrix inversion
+        jitter = 1e-5 * torch.eye(H_pot.shape[0], dtype=torch.float64)
+        cov_matrix = torch.inverse(H_pot + jitter)
+
+        # L is the lower triangular Cholesky factor
+        L = torch.linalg.cholesky(cov_matrix)
+        X_opt_tensor = torch.tensor(self.X_MAP, dtype=torch.float64)
+
+        def potential_fn_whitened(params_dict):
+            # u is the perfectly isotropic variable that Pyro is exploring
+            u = params_dict["u"]
+            
+            # Reparameterization Trick: Warp 'u' back into your highly correlated 'z' space
+            # z = MAP + L * u
+            z = X_opt_tensor + torch.matmul(L, u)
+            
+            # Pass 'z' to our custom hybrid autograd bridge
+            return CustomEnergy.apply(
+                z, VT_X, gmm_propagated, beta, Tpmp, 
+                Eb_mean_data, Eb_std_data, thawed_fractional_area, frozen_fractional_area, Eb_standardize_epsilon
+            )
+
+        nuts_kernel = mcmc.NUTS(
+            potential_fn=potential_fn_whitened,
+            adapt_step_size=True,       # NUTS easily finds a large step size in spherical space
+            adapt_mass_matrix=False,    # Keep mass matrix as Identity!
+            max_tree_depth=10           # Let it run deep if it wants, it will be fast now
+        )
+
+        # 4. Initialize and Run MCMC
+        # Since z_initial = MAP, the corresponding u_initial is exactly a vector of 0s
+        initial_params = {"u": torch.zeros_like(X_opt_tensor)}
+
+        num_samples = 4000
+        warmup_steps = 1000  # Space is perfectly isotropic now, warmup is incredibly fast
+
+        # run HMC
+        mcmc_run = mcmc.MCMC(
+            nuts_kernel,
+            num_samples=num_samples,
+            warmup_steps=warmup_steps,
+            initial_params=initial_params
+        )
+
+        print(f"Starting HMC sampling: {num_samples} samples, {warmup_steps} warmup...")
+        mcmc_run.run(extra_fields=("potential_energy",))
+        torch.save(mcmc_run, "../data/posterior-hmc-models/mcmc_run.pt")
+
+        # u_samples: shape (N, M) numpy array
+        u_samples = mcmc_run.get_samples()["u"].cpu().numpy()  # shape (N, M)
+        u_samples = torch.tensor(u_samples, dtype=torch.float64)
+        num_samples = u_samples.shape[0]
+        log_probs = []
+
+        with torch.no_grad():
+            for i in range(num_samples):
+                u_i = u_samples[i]  # shape (M,)
+                
+                # potential_fn_whitened returns NEGATIVE log prob → negate it
+                neg_lp = potential_fn_whitened({"u": u_i})
+                log_probs.append(neg_lp.item())
+
+        log_probs = np.array(log_probs)  # shape: (N,)
+        # Sort samples by log probability (ascending)
+        sorted_indices = np.argsort(log_probs) 
+        samples_sorted = u_samples[sorted_indices]
+        log_probs_sorted = log_probs[sorted_indices]
+
+        # Find the 5th and 95th percentile THRESHOLDS on log prob
+        lp_p5  = np.percentile(log_probs_sorted, 5)
+        lp_p95 = np.percentile(log_probs_sorted, 95)
+
+        # The actual samples at those boundaries
+        z_samples = (X_opt_tensor + (L @ samples_sorted.T).T).numpy()
+
+        idx_p5  = np.argmin(np.abs(log_probs_sorted - lp_p5))
+        idx_p95 = np.argmin(np.abs(log_probs_sorted - lp_p95))
+
+        z_p5  = z_samples[idx_p5]  
+        z_p95 = z_samples[idx_p95]  
+
+        # Apply the reverse transformation to the samples: z_samples = MAP + u_samples @ L^T
+        hmc_samples = self.X_MAP + (u_samples.numpy() @ L.numpy().T)
+        print(f"HMC Sampling Complete. Extracted shape: {hmc_samples.shape}")
+
+        Eb_samples_norm = self.pca_x.inverse_transform(hmc_samples) 
+        Eb_std_flat     = self.Eb_std_data.flatten()
+        Eb_mean_flat    = self.Eb_mean_data.flatten()
+        Eb_samples_ori  = Eb_samples_norm * Eb_std_flat + Eb_mean_flat
+
+        Tb_samples = np.zeros_like(Eb_samples_ori)
+        Tpmp_flat  = self.Tpmp.flatten()
+
+        for i in range(num_samples):
+            # Depending on whether enthalpy_to_temperature expects torch tensors or numpy arrays
+            Eb_i = torch.from_numpy(Eb_samples_ori[i])
+            Tpmp_i = torch.from_numpy(Tpmp_flat) if isinstance(Tpmp_flat, np.ndarray) else Tpmp_flat
+            
+            Tb_samples[i] = enthalpy_to_temperature(Eb_i, Tpmp_i).numpy()
+
+        # convert the 5% and 95% 
+        Eb_p5 = self.pca_x.inverse_transform(z_p5) * Eb_std_flat + Eb_mean_flat
+        Eb_p95 = self.pca_x.inverse_transform(z_p95) * Eb_std_flat + Eb_mean_flat
+
+        # Calculate Standard Deviation directly across the sample axis
+        posterior_std_Tb = np.std(Tb_samples, axis=0).reshape(256, 256)
+
+        Tb_p5 = enthalpy_to_temperature(Eb_p5, Tpmp_flat.numpy(), istorch=False)
+        Tb_p95 = enthalpy_to_temperature(Eb_p95, Tpmp_flat.numpy(), istorch=False)
+
+        Tb_p5 = Tb_p5.reshape(self.nx, self.ny)
+        Tb_p95 = Tb_p95.reshape(self.nx, self.ny)
+        Tb_p5[self.domain_mask == False] = np.nan
+        Tb_p95[self.domain_mask == False] = np.nan
+        plt.figure(figsize=(12, 5))
+        plt.subplot(1, 2, 1)
+        plt.imshow(Tb_p5, cmap='RdBu_r', vmin=250, vmax=273.15)
+        plt.title('5th Percentile of T_b from HMC Samples')
+        plt.colorbar()
+        plt.gca().invert_yaxis()
+        plt.subplot(1, 2, 2)
+        plt.imshow(Tb_p95, cmap='RdBu_r', vmin=250, vmax=273.15)
+        plt.title('95th Percentile of T_b from HMC Samples')
+        plt.colorbar()
+        plt.gca().invert_yaxis()
+        plt.suptitle('HMC Posterior Percentiles of T_b')
+        plt.show()
+
+        deg2pmp_p5 = (Tpmp_flat - Tb_p5.flatten()).reshape(self.nx, self.ny)
+        deg2pmp_p95 = (Tpmp_flat - Tb_p95.flatten()).reshape(self.nx, self.ny)
+        deg2pmp_p5[self.domain_mask == False] = np.nan
+        deg2pmp_p95[self.domain_mask == False] = np.nan
+        plt.figure(figsize=(12, 5))
+        plt.subplot(1, 2, 1)
+        plt.imshow(deg2pmp_p5, cmap='hot', vmin=0, vmax=8)
+        plt.colorbar()  
+        # add contourline of 0.5
+        plt.contour(deg2pmp_p5, levels=[0.5], colors='white', linewidths=1)
+        plt.title('5th Percentile of T_b - T_pmp from HMC Samples')
+        plt.gca().invert_yaxis()
+        plt.subplot(1, 2, 2)
+        plt.imshow(deg2pmp_p95 , cmap='hot', vmin=0, vmax=8)
+        plt.colorbar()
+        # add contourline of 0.5
+        plt.contour(deg2pmp_p95, levels=[0.5], colors='white', linewidths=1)
+        plt.title('95th Percentile of T_b - T_pmp from HMC Samples')
+        plt.gca().invert_yaxis()
+        plt.suptitle('HMC Posterior Percentiles of T_b - T_pmp')
+        plt.show()
+        return 
+
+
     def plot_gmm_samples(self, n_samples=3):
         """   
         Visualize GMM predictions from random test samples. Default to 3 samples. 
