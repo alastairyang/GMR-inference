@@ -15,6 +15,7 @@ from sklearn.preprocessing import StandardScaler
 import numpy as np
 import time
 import torch
+import torch.optim as optim
 
 class model:
     """ Latent space Bayesian inference model for ice sheet basal temperature estimation
@@ -139,7 +140,8 @@ class model:
         """  
         Load the observation data.
         """
-        Y_obs_standardized = standardize(Y_obs, self.Y_mean, self.Y_std,
+        print("shape of Y_obs:", Y_obs.shape)
+        Y_obs_standardized = standardize(Y_obs.flatten(), self.Y_mean, self.Y_std,
                                          method='relaxation',
                                          epsilon=self.Y_epsilon)
         
@@ -147,14 +149,14 @@ class model:
         if show_plot:
             plt.figure(figsize=(20, 6))
             plt.subplot(1, 3, 1)
-            plt.imshow(Y_obs_standardized, cmap='bwr', vmin=-5, vmax=5)
+            plt.imshow(Y_obs_standardized.reshape(self.nx, self.ny), cmap='bwr', vmin=-5, vmax=5)
             plt.title('Standardized Observed Ns')
             plt.colorbar()
             plt.gca().invert_yaxis()
 
             # second plot: histogram of the standardized observed Ns
             plt.subplot(1, 3, 2)
-            plt.hist(Y_obs_standardized[self.flight_mask].flatten(), bins=50, color='blue', alpha=0.7)
+            plt.hist(Y_obs_standardized.reshape(self.nx, self.ny)[self.flight_mask].flatten(), bins=50, color='blue', alpha=0.7)
             plt.xlim(-15, 15)
             # plot y line at x = 0
             plt.axvline(x=0, color='red', linestyle='--')
@@ -163,7 +165,7 @@ class model:
             plt.ylabel('Frequency')
 
             plt.subplot(1, 3, 3)
-            plt.imshow(Y_obs, cmap='viridis', vmin=0, vmax=30)
+            plt.imshow(Y_obs.reshape(self.nx, self.ny), cmap='viridis', vmin=0, vmax=30)
             plt.title('Observed Attenuation Rate')
             plt.colorbar()
             plt.gca().invert_yaxis()
@@ -176,6 +178,15 @@ class model:
         Load the standardization data (mean, std) from the simulation ensemble
           -> Going between standardized space and the physical space
         """
+        # shape check: the mean and std should all be flatten
+        if X_mean.shape != (self.nx * self.ny * self.n_channel,):
+            raise ValueError(f"X_mean should have shape {(self.nx * self.ny * self.n_channel,)}, but got {X_mean.shape}")
+        if X_std.shape != (self.nx * self.ny * self.n_channel,):
+            raise ValueError(f"X_std should have shape {(self.nx * self.ny * self.n_channel,)}, but got {X_std.shape}")
+        if Y_mean.shape != (self.nx * self.ny * self.n_channel,):
+            raise ValueError(f"Y_mean should have shape {(self.nx * self.ny * self.n_channel,)}, but got {Y_mean.shape}")
+        if Y_std.shape != (self.nx * self.ny * self.n_channel,):
+            raise ValueError(f"Y_std should have shape {(self.nx * self.ny * self.n_channel,)}, but got {Y_std.shape}")
         self.X_mean = X_mean
         self.X_std = X_std
         self.Y_mean = Y_mean
@@ -370,9 +381,6 @@ class model:
             # check to see if Y_mean_unprop is identical to mu_obs_latent
             if np.allclose(Y_mean_unprop, mu_obs_latent, atol=1e-2):
                 print("Warning:The mean of Y from unpropagated GMM matches the optimized Y_obs mean.")
-            print("Mean from unpropagated GMM:", Y_mean_unprop)
-            print("Optimized Y_obs mean:", mu_obs_latent)
-
             gmm_unpropagated = self.gmm.condition(np.arange(self.ndim_reduced_y), Y_mean_unprop)
             X_samples_unprop = gmm_unpropagated.sample(n_samples)
             X_samples_unprop_ori = np.zeros((self.ndim_ori, n_samples))
@@ -540,7 +548,7 @@ class model:
         plt.show()
         return z_optimal, residual_latent
     
-    def compute_MAP(self, beta=1, show_plot=True):
+    def compute_MAP(self, beta=1, n_iter=20, show_plot=True):
         """ 
         Compute the Maximum A Posteriori
         """
@@ -550,32 +558,126 @@ class model:
         n_samples = 300
         X_samples = self.gmm_prop.sample(n_samples)
         X_samples_mean = np.mean(X_samples, axis=0)
-        init_Eb_ori = X_samples_mean.flatten().reshape(1, -1)
-        init_Eb_reduced = self.pca_x.transform(init_Eb_ori)
-        init_Eb_ori = init_Eb_ori.T.flatten()
-        init_Eb_reduced = init_Eb_reduced.T.flatten()
+        init_Eb_ori = X_samples_mean.flatten()
+        # init_Eb_reduced = self.pca_x.transform(init_Eb_ori)
+        # init_Eb_ori = init_Eb_ori.T.flatten()
+        # init_Eb_reduced = init_Eb_reduced.T.flatten()
 
-        init_Eb_reduced = torch.from_numpy(init_Eb_reduced)
-        Tpmp = torch.from_numpy(pmp)
-        dw = torch.from_numpy(thawed_fractional_area)
-        df = torch.from_numpy(frozen_fractional_area)
+        init_Eb_reduced = torch.from_numpy(init_Eb_ori)
+        Tpmp = torch.from_numpy(self.pmp).flatten()
+        dw = torch.from_numpy(self.thawed_fractional_area)
+        df = torch.from_numpy(self.frozen_fractional_area)
 
-        Eb_mean_data = self.X_mean
-        Eb_std_data = self.X_std
+        Eb_mean_data = torch.from_numpy(self.X_mean)
+        Eb_std_data = torch.from_numpy(self.X_std)
 
-        # check the forward terms
-        log_posterior_val = log_posterior(init_Eb_reduced, 
-                                          self.pca_x.components_, 
-                                          self.gmm_prop,
-                                          beta,
-                                          Tpmp, 
-                                          Eb_mean_data, 
-                                          Eb_std_data, 
-                                          thawed_fractional_area, 
-                                          frozen_fractional_area,
-                                          verbose=True, 
-                                          Eb_epsilon=self.X_epsilon)
+        # start the optimization using L-BFGS
+        n_iter = 20
+        X = init_Eb_reduced.clone().requires_grad_(True)
+        optimizer = optim.LBFGS([X], lr=0.5, max_iter=n_iter)
 
+        saved_snapshots = []
+
+        # print shapes
+        print("Shape of X:", X.shape)
+        print("Shape of Tpmp:", Tpmp.shape)
+        print("Shape of dw:", dw.shape)
+        print("Shape of df:", df.shape)
+        print("Shape of Eb_mean_data:", Eb_mean_data.shape)
+        print("Shape of Eb_std_data:", Eb_std_data.shape)
+
+        def closure():
+            """ closure function for L-BFGS optimizer
+            """
+            optimizer.zero_grad()
+            X_detached = X.detach()
+
+            # function value: negative log posterior
+            value = -log_posterior(X_detached, 
+                                   self.pca_x.components_, 
+                                   self.gmm_prop,
+                                   beta,
+                                   Tpmp, 
+                                   Eb_mean_data, 
+                                   Eb_std_data,
+                                   dw, 
+                                   df,
+                                   verbose=False, 
+                                   Eb_epsilon=self.X_epsilon)
+            # gradient
+            grad = -log_posterior_gradient(X_detached, 
+                                           self.pca_x.components_, 
+                                           self.gmm_prop, 
+                                           beta, 
+                                           Tpmp, 
+                                           Eb_mean_data, 
+                                           Eb_std_data, 
+                                           dw, 
+                                           df, 
+                                           Eb_epsilon=self.X_epsilon)
+            # Convert gradient to torch tensor if needed
+            if not isinstance(grad, torch.Tensor):
+                grad = torch.tensor(grad, dtype=X.dtype, device=X.device)
+            
+            X.grad = grad
+            return value
+
+        for i in range(n_iter):
+            print(f"Starting iteration {i+1}/{n_iter}...")
+            optimizer.step(closure)
+            # monitor the loss (or the neg log posterior)
+            with torch.no_grad():
+                current_loss = -log_posterior(X, 
+                                              self.pca_x.components_, 
+                                              self.gmm_prop,
+                                              beta, 
+                                              Tpmp, 
+                                              Eb_mean_data, 
+                                              Eb_std_data,
+                                              dw, 
+                                              df,
+                                              verbose=False, 
+                                              Eb_epsilon=self.X_epsilon)
+                print(f"Iteration {i+1}/{n_iter}, Negative Log Posterior: {current_loss.item():.4f}")
+            # save the first n iterations and the last iteration
+            if i < 9 or i == n_iter - 1:
+                saved_snapshots.append(X.detach().cpu().numpy().copy())
+
+            # save the hessian matrix at the last iteration for analysis
+            if i == n_iter - 1:
+                optimized_X = X.detach().requires_grad_(True)   # fresh leaf, grad-enabled
+                hessian = log_posterior_hessian(
+                    optimized_X, self.pca_x.components_, self.gmm_prop,
+                    beta, Tpmp, Eb_mean_data, Eb_std_data,
+                    dw, df,
+                    Eb_epsilon=self.X_epsilon
+
+                    )
+        
+        X_optimized  = X.detach().numpy()
+        Eb_std_data  = Eb_std_data.numpy()
+        Eb_mean_data = Eb_mean_data.numpy()
+        Eb_MAP = self.pca_x.inverse_transform(X_optimized.reshape(1, -1)).reshape(self.nx, self.ny)
+        Eb_MAP_ori = torch.from_numpy(Eb_MAP * Eb_std_data.reshape(self.nx, self.ny) + Eb_mean_data.reshape(self.nx, self.ny))
+        Tb_MAP = enthalpy_to_temperature(Eb_MAP_ori.flatten(), Tpmp.flatten()).reshape(self.nx, self.ny).numpy()
+
+        # reverse standardize and back to temperature 
+        plt.figure(figsize=(6, 10))
+        Tb_MAP[self.domain_mask == False] = np.nan
+        plt.subplot(2, 1, 1)
+        plt.imshow(Tb_MAP, cmap='RdBu_r', vmin=255, vmax=273.15)
+        plt.title('MAP Estimate of E_b')
+        plt.colorbar()
+        plt.gca().invert_yaxis()
+        dT_to_pmp = Tpmp.reshape(self.nx, self.ny) - Tb_MAP
+        dT_to_pmp[self.domain_mask == False] = np.nan
+        # plot as contour lines
+        plt.subplot(2, 1, 2)
+        plt.imshow(dT_to_pmp, cmap='hot', vmin=0, vmax=5)
+        plt.title('MAP Estimate of T_b - T_pmp')
+        plt.colorbar()
+        plt.gca().invert_yaxis()
+        plt.show()
         return
     
     def plot_gmm_samples(self, n_samples=3):
