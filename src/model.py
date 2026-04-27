@@ -43,6 +43,12 @@ class model:
         # mask
         self.flight_mask = None
         self.domain_mask = None
+        # basal thermal evidence
+        self.thawed_mask = None
+        self.thawed_fractional_area = None
+        self.frozen_mask = None
+        self.frozen_fractional_area = None
+        self.pmp = None
 
         self.X_reduced = None # PCA reduction
         self.Y_reduced = None
@@ -178,6 +184,54 @@ class model:
         self.Y_epsilon = Y_epsilon
         return 
     
+    def load_evidence(self, \
+                      thawed_mask,
+                      thawed_frac_area, 
+                      frozen_mask,
+                      frozen_frac_area,
+                      pmp,
+                      show_plot=True):
+        """
+        Load the basal thermal evidence
+        """
+        self.thawed_mask            = thawed_mask
+        self.thawed_fractional_area = thawed_frac_area
+        self.frozen_mask            = frozen_mask
+        self.frozen_fractional_area = frozen_frac_area
+        self.pmp                    = pmp
+
+        if show_plot:
+            # visualize both and pmp
+            plt.figure(figsize=(8, 12))
+            plt.subplot(3, 2, 1)
+            plt.imshow(self.frozen_mask.reshape(self.nx, self.ny), cmap='gray')
+            plt.title('Frozen Base Mask')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+            plt.subplot(3, 2, 2)
+            plt.imshow(self.thawed_mask.reshape(self.nx, self.ny), cmap='gray')
+            plt.title('Thawed Base Mask')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+            plt.subplot(3, 2, 3)
+            plt.imshow(self.frozen_fractional_area.reshape(self.nx, self.ny), cmap='Blues', alpha=0.5)
+            plt.title('Frozen Fractional Area')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+            plt.subplot(3, 2, 4)
+            plt.imshow(self.thawed_fractional_area.reshape(self.nx, self.ny), cmap='Reds', alpha=0.5)
+            plt.title('Thawed Fractional Area')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+
+            plt.subplot(3, 2, 5)
+            plt.imshow(self.pmp.reshape(self.nx, self.ny), cmap='hot')
+            plt.title('Pressure Melting Point')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+            plt.show()
+        return
+
     def reduce(self, n_component_x, n_component_y):
         """ 
         Reduce the dimensionality of the input and output data using PCA.
@@ -236,6 +290,7 @@ class model:
         print("Shape of XY_validation:", self.XY_validation.shape)
         print("Shape of XY_test:", self.XY_test.shape)
         return
+    
     def train_gmm_XY(self, n_components):
         """ 
         Train a Gaussian Mixture Model on the joint distribution of X, Y in their latent space
@@ -260,8 +315,11 @@ class model:
         """
         Derive the prior P(X) -- under Y_obs -- from the joint P(X,Y)
         This involves two steps:
-            1. Finding the optimal Y in the latent space, both mu_Y_obs and sigma_Y_obs
-            2. Then pushforward, \int P(X|Y) P(Y_obs) dY 
+            1. Finding the optimal Y in the latent space -> the mean (mu_obs_latent)
+            2. Use the residue projected the PCA space along with variance from sim. ensemble
+               to construct a covariance matrix as sigma_obs_latent   
+            3. Then pushforward, \int P(X|Y) P(Y_obs) dY, which is analytical due to 
+               (i) Gaussianity and (ii) Linear operation of PCA
         
         Parameters
         ----------
@@ -302,58 +360,80 @@ class model:
             # sample from gmm_propagated to get the distribution of X
             n_samples = 300
             X_samples = gmm_propagated.sample(n_samples)
-            X_samples_ori = np.zeros((self.ndim_ori, n_samples))
+            X_samples_prop_ori = np.zeros((self.ndim_ori, n_samples))
             for i, sample in enumerate(X_samples):
-                X_samples_ori[:,i] = self.pca_x.inverse_transform(sample)
+                X_samples_prop_ori[:,i] = self.pca_x.inverse_transform(sample)
 
             # sample from un-propagated model for comparison
-            print("shape of mu_obs_latent:", mu_obs_latent.shape)
-            gmm_unpropagated = self.gmm.condition(np.arange(self.ndim_reduced_y), mu_obs_latent.flatten())
+            XY_samples_ori = self.gmm.sample(n_samples=1000)
+            Y_mean_unprop = np.mean(XY_samples_ori[:, :self.ndim_reduced_y], axis=0)
+            # check to see if Y_mean_unprop is identical to mu_obs_latent
+            if np.allclose(Y_mean_unprop, mu_obs_latent, atol=1e-2):
+                print("Warning:The mean of Y from unpropagated GMM matches the optimized Y_obs mean.")
+            print("Mean from unpropagated GMM:", Y_mean_unprop)
+            print("Optimized Y_obs mean:", mu_obs_latent)
+
+            gmm_unpropagated = self.gmm.condition(np.arange(self.ndim_reduced_y), Y_mean_unprop)
             X_samples_unprop = gmm_unpropagated.sample(n_samples)
             X_samples_unprop_ori = np.zeros((self.ndim_ori, n_samples))
             for i, sample in enumerate(X_samples_unprop):
                 X_samples_unprop_ori[:,i] = self.pca_x.inverse_transform(sample)
 
-            # visualize the mean and variance
-            X_samples_mean = np.mean(X_samples_ori, axis=1).reshape(self.nx, self.ny)
-            X_samples_std = np.std(X_samples_ori, axis=1).reshape(self.nx, self.ny)
-            X_samples_mean[self.domain_mask == False] = np.nan
-            X_samples_std[self.domain_mask == False] = np.nan
 
-            plt.figure(figsize=(12, 10))
-            plt.subplot(2, 2, 3)
-            plt.imshow(X_samples_mean, cmap='bwr', vmin=-5, vmax=5)
-            plt.title('Mean of $E_b$ (Obs. propagated)')
-            plt.colorbar()
-            plt.gca().invert_yaxis()
-            plt.subplot(2, 2, 4)
-            plt.imshow(X_samples_std, cmap='hot', vmin=0, vmax=5)
-            plt.title('Std of $E_b$ (Obs. propagated)')
-            plt.colorbar()
-            plt.gca().invert_yaxis()
+            plt.figure(figsize=(10, 10))
 
-            X_samples_mean = np.mean(X_samples_unprop_ori, axis=1).reshape(self.nx, self.ny)
-            X_samples_std = np.std(X_samples_unprop_ori, axis=1).reshape(self.nx, self.ny)
-            X_samples_mean[self.domain_mask == False] = np.nan
-            X_samples_std[self.domain_mask == False] = np.nan
-            plt.subplot(2, 2, 1)
-            plt.imshow(X_samples_mean, cmap='bwr', vmin=-5, vmax=5)
+            X_samples_mean_unprop = np.mean(X_samples_unprop_ori, axis=1).reshape(self.nx, self.ny)
+            X_samples_std_unprop = np.std(X_samples_unprop_ori, axis=1).reshape(self.nx, self.ny)
+            X_samples_mean_unprop[self.domain_mask == False] = np.nan
+            X_samples_std_unprop[self.domain_mask == False] = np.nan
+            plt.subplot(3, 2, 1)
+            plt.imshow(X_samples_mean_unprop, cmap='bwr', vmin=-5, vmax=5)
             plt.title('Mean of $E_b$ (Unpropagated)')
             plt.colorbar()
             plt.gca().invert_yaxis()
-            plt.subplot(2, 2, 2)
-            plt.imshow(X_samples_std, cmap='hot', vmin=0, vmax=5)
+            plt.subplot(3, 2, 2)
+            plt.imshow(X_samples_std_unprop, cmap='hot', vmin=0, vmax=3)
             plt.title('Std of $E_b$ (Unpropagated)')
             plt.colorbar()
             plt.gca().invert_yaxis()
 
-            # plt.suptitle('Uncertainty Propagation through GMM')
+            X_samples_mean_prop = np.mean(X_samples_prop_ori, axis=1).reshape(self.nx, self.ny)
+            X_samples_std_prop = np.std(X_samples_prop_ori, axis=1).reshape(self.nx, self.ny)
+            X_samples_mean_prop[self.domain_mask == False] = np.nan
+            X_samples_std_prop[self.domain_mask == False] = np.nan
+            plt.subplot(3, 2, 3)
+            plt.imshow(X_samples_mean_prop, cmap='bwr', vmin=-5, vmax=5)
+            plt.title('Mean of $E_b$ (Obs. propagated)')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+            plt.subplot(3, 2, 4)
+            plt.imshow(X_samples_std_prop, cmap='hot', vmin=0, vmax=3)
+            plt.title('Std of $E_b$ (Obs. propagated)')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+
+            # plt those two on a histogram
+            plt.subplot(3, 2, 5)
+            plt.hist(X_samples_mean_unprop[self.domain_mask].flatten(), bins=50, color='blue', alpha=0.7, label='Unpropagated')
+            plt.hist(X_samples_mean_prop[self.domain_mask].flatten(), bins=50, color='red', alpha=0.7, label='Propagated')
+            plt.legend()
+            
+            # plot two std on a histogram
+            plt.subplot(3, 2, 6)
+            plt.hist(X_samples_std_unprop[self.domain_mask].flatten(), bins=50, color='blue', alpha=0.7, label='Unpropagated')  
+            plt.hist(X_samples_std_prop[self.domain_mask].flatten(), bins=50, color='red', alpha=0.7, label='Propagated')   
+            plt.legend()
             plt.show()
         return 
 
     def compute_optimal_Y_in_latent(self, beta=0.1):
         """  
         Solve the optimization problem with regularization to find the optimal Y in the latent space
+
+        Parameters 
+        ----------
+            beta: float
+
         """
         def objective_scaled(z_scaled, Y_obs, V, beta):
             """Objective in scaled z space — avoids scaler transform inside loop."""
@@ -459,6 +539,44 @@ class model:
         plt.gca().invert_yaxis()
         plt.show()
         return z_optimal, residual_latent
+    
+    def compute_MAP(self, beta=1, show_plot=True):
+        """ 
+        Compute the Maximum A Posteriori
+        """
+        # find good initial value for optimization
+        # --> here we use mean 
+
+        n_samples = 300
+        X_samples = self.gmm_prop.sample(n_samples)
+        X_samples_mean = np.mean(X_samples, axis=0)
+        init_Eb_ori = X_samples_mean.flatten().reshape(1, -1)
+        init_Eb_reduced = self.pca_x.transform(init_Eb_ori)
+        init_Eb_ori = init_Eb_ori.T.flatten()
+        init_Eb_reduced = init_Eb_reduced.T.flatten()
+
+        init_Eb_reduced = torch.from_numpy(init_Eb_reduced)
+        Tpmp = torch.from_numpy(pmp)
+        dw = torch.from_numpy(thawed_fractional_area)
+        df = torch.from_numpy(frozen_fractional_area)
+
+        Eb_mean_data = self.X_mean
+        Eb_std_data = self.X_std
+
+        # check the forward terms
+        log_posterior_val = log_posterior(init_Eb_reduced, 
+                                          self.pca_x.components_, 
+                                          self.gmm_prop,
+                                          beta,
+                                          Tpmp, 
+                                          Eb_mean_data, 
+                                          Eb_std_data, 
+                                          thawed_fractional_area, 
+                                          frozen_fractional_area,
+                                          verbose=True, 
+                                          Eb_epsilon=self.X_epsilon)
+
+        return
     
     def plot_gmm_samples(self, n_samples=3):
         """   
