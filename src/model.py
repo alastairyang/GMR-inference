@@ -443,6 +443,8 @@ class model:
             plt.hist(X_samples_std_unprop[self.domain_mask].flatten(), bins=50, color='blue', alpha=0.7, label='Unpropagated')  
             plt.hist(X_samples_std_prop[self.domain_mask].flatten(), bins=50, color='red', alpha=0.7, label='Propagated')   
             plt.legend()
+            plt.savefig('../figs/propagation_effect.png', dpi=300)
+
             plt.show()
         return 
 
