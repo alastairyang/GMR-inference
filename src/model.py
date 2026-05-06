@@ -217,12 +217,15 @@ class model:
         """
         Load the basal thermal evidence
         """
+        # below are within the domain bound
         self.thawed_mask            = thawed_mask
         self.thawed_fractional_area = thawed_frac_area
         self.frozen_mask            = frozen_mask
         self.frozen_fractional_area = frozen_frac_area
+        # pmp may be defined beyond domain bound
         self.pmp                    = pmp
-
+        pmp_plot = pmp.copy()
+        pmp_plot[self.domain_mask == False] = np.nan
         if show_plot:
             # visualize both and pmp
             plt.figure(figsize=(8, 12))
@@ -248,7 +251,7 @@ class model:
             plt.gca().invert_yaxis()
 
             plt.subplot(3, 2, 5)
-            plt.imshow(self.pmp.reshape(self.nx, self.ny), cmap='hot')
+            plt.imshow(pmp_plot.reshape(self.nx, self.ny), cmap='hot')
             plt.title('Pressure Melting Point')
             plt.colorbar()
             plt.gca().invert_yaxis()
@@ -1038,3 +1041,77 @@ class model:
             plt.colorbar()
         plt.tight_layout()
         return
+    
+    def plot_evidence_consistency(self, T):
+        """
+        Check the consistency between a basal temperature field against the known basal thermal evidence
+
+        Parameters
+        ----------
+        T: 2D array (nx*ny, )
+            Basal temperature field in the original space
+        """
+        epsilon = 0.5
+        pmp = self.pmp.flatten().copy()
+
+        T_thawed = np.nan * np.ones_like(T)
+        T_frozen = np.nan * np.ones_like(T)
+        pmp_thawed = np.nan * np.ones_like(pmp)
+        pmp_frozen = np.nan * np.ones_like(pmp)
+        T_thawed[self.thawed_mask==True]   = T[self.thawed_mask==True]
+        T_frozen[self.frozen_mask==True]   = T[self.frozen_mask==True]
+        pmp_thawed[self.thawed_mask==True] = pmp[self.thawed_mask==True]
+        pmp_frozen[self.frozen_mask==True] = pmp[self.frozen_mask==True]
+        dT_thawed = np.abs(pmp_thawed - T_thawed)
+        dT_frozen = np.abs(pmp_frozen - T_frozen)
+        consist_thawed = np.where(dT_thawed < epsilon, 1, 0)
+        consist_frozen = np.where(dT_frozen > epsilon, 1, 0)
+        total_consist   = consist_thawed + consist_frozen
+
+        inconsist_thawed = np.where(dT_thawed >= epsilon, 1, 0)
+        inconsist_frozen = np.where(dT_frozen <= epsilon, 1, 0)
+        total_inconsist = inconsist_thawed + inconsist_frozen
+
+        total_consist_count = np.nansum(total_consist)
+        total_evidence_count = np.sum(self.thawed_mask) + np.sum(self.frozen_mask)
+        total_consist_fraction = total_consist_count / total_evidence_count
+        print(f"Total consistent points: {total_consist_count} out of {total_evidence_count} ({total_consist_fraction:.2%})")
+        
+        # make the total_consist and total_inconsist into scattered point dataset
+        X, Y = np.meshgrid(self.coord[0], self.coord[1])
+        X_flat = X.flatten()
+        Y_flat = Y.flatten()
+        consistent_points_x = X_flat[total_consist == 1]
+        consistent_points_y = Y_flat[total_consist == 1]
+        inconsistent_points_x = X_flat[total_inconsist == 1]
+        inconsistent_points_y = Y_flat[total_inconsist == 1]
+
+        plt.figure(figsize=(8, 8))
+        plt.imshow(T.reshape(self.nx, self.ny), 
+                   extent=self.extent,
+                   cmap='RdBu_r', 
+                   vmin=250, vmax=273.15,
+                   alpha=0.5)
+        plt.colorbar()
+        plt.scatter(consistent_points_x/1e3, consistent_points_y/1e3, 
+                    color='green', 
+                    s=3,
+                    alpha=0.7, 
+                    label='Consistent with Evidence',
+                    edgecolors='black',
+                    linewidths=0.2)
+        plt.scatter(inconsistent_points_x/1e3, inconsistent_points_y/1e3, 
+                    color='red', 
+                    s=3,
+                    alpha=0.7, 
+                    label='Inconsistent with Evidence',
+                    edgecolors='black',
+                    linewidths=0.2)
+        plt.title('Basal Temperature Field with Consistency Markers')
+        plt.legend()
+        plt.gca().invert_yaxis()
+        plt.xlabel('X (km)')
+        plt.ylabel('Y (km)')
+        plt.show()
+        return 
+        
