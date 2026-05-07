@@ -9,6 +9,7 @@ from gmr import GMM
 from scipy.optimize import minimize, Bounds
 
 import pyro.infer.mcmc as mcmc
+import pyro.ops.stats as stats
 
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
@@ -73,6 +74,7 @@ class model:
         self.Tb_MAP      = None
         self.hessian_MAP = None
         # --- posterior
+        self.post_samples= None
         self.Tb_p5       = None
         self.Tb_p95      = None
         self.Tb_std      = None
@@ -738,8 +740,8 @@ class model:
         nuts_kernel = mcmc.NUTS(
             potential_fn=potential,
             adapt_step_size=True,       # NUTS easily finds a large step size in spherical space
-            adapt_mass_matrix=False,    # Keep mass matrix as Identity!
-            max_tree_depth=10           # Let it run deep if it wants, it will be fast now
+            adapt_mass_matrix=True,    # Keep mass matrix as Identity!
+            max_tree_depth=12           # Let it run deep if it wants, it will be fast now
         )
 
         # 4. Initialize and Run MCMC
@@ -763,9 +765,17 @@ class model:
         self.mcmc_md = mcmc_run
         return 
     
-    def analyze_posterior_samples(self, beta=1):
+    def analyze_posterior_samples(self, beta=1, loading=True):
+        """
+        Extract the HMC samples and analyze their properties, including:
+        1. Log probability distribution of the samples to understand the posterior landscape.
+        2. Percentile-based credible intervals (e.g., 5th and 95th percentiles) to quantify uncertainty in the inferred parameters.
+        """
         # ------------------------ Extracting and Analyzing HMC Samples ------------------------
         # u_samples: shape (N, M) numpy array
+        if loading:
+            self.mcmc_md = torch.load("../data/posterior-hmc-models/mcmc_run.pt")
+
         H_pot = torch.tensor(-self.hessian_MAP, dtype=torch.float64)
         # stable matrix inversion
         jitter = 1e-5 * torch.eye(H_pot.shape[0], dtype=torch.float64)
@@ -820,9 +830,13 @@ class model:
         z_p5  = z_samples[idx_p5]  
         z_p95 = z_samples[idx_p95]  
 
+        n_keep = int(0.90 * num_samples)
+        hpd_samples = z_samples[sorted_indices[-n_keep:]]  # highest density samples
+
         # Apply the reverse transformation to the samples: z_samples = MAP + u_samples @ L^T
         hmc_samples = self.X_MAP + (u_samples.numpy() @ L.numpy().T)
         print(f"HMC Sampling Complete. Extracted shape: {hmc_samples.shape}")
+        self.post_samples = hmc_samples
 
         Eb_samples_norm = self.pca_x.inverse_transform(hmc_samples) 
         Eb_std_flat     = self.X_std.flatten()
@@ -846,51 +860,70 @@ class model:
         # Calculate Standard Deviation directly across the sample axis
         self.Tb_std = np.std(Tb_samples, axis=0).reshape(256, 256)
 
-        self.Tb_p5 = enthalpy_to_temperature(Eb_p5, Tpmp_flat, istorch=False)
-        self.Tb_p95 = enthalpy_to_temperature(Eb_p95, Tpmp_flat, istorch=False)
+        # Summarize the HPD region as a band
+        self.Tb_p5 = Tb_samples[sorted_indices[-n_keep:]].min(axis=0)
+        self.Tb_p95 = Tb_samples[sorted_indices[-n_keep:]].max(axis=0)
+        # self.Tb_p5 = enthalpy_to_temperature(Eb_p5, Tpmp_flat, istorch=False)
+        # self.Tb_p95 = enthalpy_to_temperature(Eb_p95, Tpmp_flat, istorch=False)
 
         self.Tb_p5 = self.Tb_p5.reshape(self.nx, self.ny)
         self.Tb_p95 = self.Tb_p95.reshape(self.nx, self.ny)
         self.Tb_p5[self.domain_mask == False] = np.nan
         self.Tb_p95[self.domain_mask == False] = np.nan
-        plt.figure(figsize=(12, 5))
-        plt.subplot(1, 2, 1)
-        plt.imshow(self.Tb_p5, cmap='RdBu_r', vmin=250, vmax=273.15)
-        plt.title('5th Percentile of T_b from HMC Samples')
-        plt.colorbar()
-        plt.gca().invert_yaxis()
-        plt.subplot(1, 2, 2)
-        plt.imshow(self.Tb_p95, cmap='RdBu_r', vmin=250, vmax=273.15)
-        plt.title('95th Percentile of T_b from HMC Samples')
-        plt.colorbar()
-        plt.gca().invert_yaxis()
-        plt.suptitle('HMC Posterior Percentiles of T_b')
-        plt.show()
 
-        deg2pmp_p5 = (Tpmp_flat - self.Tb_p5.flatten()).reshape(self.nx, self.ny)
-        deg2pmp_p95 = (Tpmp_flat - self.Tb_p95.flatten()).reshape(self.nx, self.ny)
-        deg2pmp_p5[self.domain_mask == False] = np.nan
-        deg2pmp_p95[self.domain_mask == False] = np.nan
-        plt.figure(figsize=(12, 5))
-        plt.subplot(1, 2, 1)
-        plt.imshow(deg2pmp_p5, cmap='hot', vmin=0, vmax=8)
-        plt.colorbar()  
-        # add contourline of 0.5
-        plt.contour(deg2pmp_p5, levels=[0.5], colors='white', linewidths=1)
-        plt.title('5th Percentile of T_b - T_pmp from HMC Samples')
-        plt.gca().invert_yaxis()
-        plt.subplot(1, 2, 2)
-        plt.imshow(deg2pmp_p95 , cmap='hot', vmin=0, vmax=8)
-        plt.colorbar()
-        # add contourline of 0.5
-        plt.contour(deg2pmp_p95, levels=[0.5], colors='white', linewidths=1)
-        plt.title('95th Percentile of T_b - T_pmp from HMC Samples')
-        plt.gca().invert_yaxis()
-        plt.suptitle('HMC Posterior Percentiles of T_b - T_pmp')
+        return 
+    
+    def posterior_quality_check(self, slicing=1000):
+        """ 
+        Checking the quality of the HMC samples with standard diagnostics:
+        1. Effective Sample Size (ESS) to assess the number of independent samples.
+        2. Trace plots to visually inspect the sampling trajectory for each latent dimension.
+        3. Autocorrelation plots to evaluate the correlation between samples at different lags.
+
+        Parameters
+        ----------
+        slicing: int
+            The number of initial samples to discard as "wandering phase" before the chain stabilizes
+        """
+        samples_tensor = torch.tensor(self.post_samples).unsqueeze(0) 
+        ess = stats.effective_sample_size(samples_tensor).numpy()
+
+        print(f"--- HMC Sampling Metrics ---")
+        print(f"Total Samples Drawn: {self.post_samples.shape[0]}")
+        print(f"Mean ESS across all dimensions: {ess.mean():.2f}")
+        print(f"Minimum ESS (Worst mixing dimension): {ess.min():.2f}")
+        print(f"Maximum ESS (Best mixing dimension): {ess.max():.2f}")
+
+        # Slice off the wandering phase
+        stable_samples = self.post_samples[slicing:]
+
+        # Re-run the ESS calculation on stable_samples
+        samples_tensor = torch.tensor(stable_samples).unsqueeze(0) 
+        ess = stats.effective_sample_size(samples_tensor).numpy()
+        print(f"Post-Burn-in Mean ESS: {ess.mean():.2f}")
+        print(f"Post-Burn-in Min ESS: {ess.min():.2f}")
+
+        # 2. Plot Trace and Autocorrelation for the first 3 latent dimensions
+        n_dims_to_plot = min(3, self.post_samples.shape[1])
+        fig, axes = plt.subplots(n_dims_to_plot, 2, figsize=(12, 3 * n_dims_to_plot))
+
+        for i in range(n_dims_to_plot):
+            # Left Column: Trace Plot
+            axes[i, 0].plot(self.post_samples[:, i], alpha=0.7, color='b')
+            axes[i, 0].set_title(f"Trace Plot: Latent Component {i}")
+            axes[i, 0].set_ylabel("Value")
+            axes[i, 0].set_xlabel("Sample Step")
+            
+            # Right Column: Autocorrelation (ACF) Plot
+            # We must mean-center the data for plt.acorr
+            centered_data = self.post_samples[:, i] - np.mean(self.post_samples[:, i])
+            axes[i, 1].acorr(centered_data, maxlags=50, usevlines=True, normed=True, lw=2)
+            axes[i, 1].set_title(f"Autocorrelation (ACF): Latent Component {i}")
+            axes[i, 1].set_xlim(0, 50)
+            axes[i, 1].set_xlabel("Lag")
+        plt.tight_layout()
         plt.show()
         return 
-
-
     def plot_gmm_samples(self, n_samples=3):
         """   
         Visualize GMM predictions from random test samples. Default to 3 samples. 
@@ -1066,7 +1099,7 @@ class model:
         plt.tight_layout()
         return
     
-    def plot_evidence_consistency(self, T):
+    def plot_evidence_consistency(self, T, beta=1):
         """
         Check the consistency between a basal temperature field against the known basal thermal evidence
 
@@ -1075,7 +1108,7 @@ class model:
         T: 2D array (nx*ny, )
             Basal temperature field in the original space
         """
-        epsilon = 0.5
+        epsilon = 0.5 * beta
         pmp = self.pmp.flatten().copy()
 
         T_thawed = np.nan * np.ones_like(T)
