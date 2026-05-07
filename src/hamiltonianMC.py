@@ -3,7 +3,7 @@ import numpy as np
 
 from src.optimization import log_posterior, log_posterior_gradient
 
-class CustomEnergy(torch.autograd.Function):
+class custom_energy(torch.autograd.Function):
     """
     Bridges the pure PyTorch/NumPy hybrid log-posterior directly into Pyro.
     """
@@ -46,3 +46,30 @@ class CustomEnergy(torch.autograd.Function):
         
         return grad_tensor * grad_output, None, None, None, None, None, None, None, None, None
     
+class whitened_potential:
+    """ 
+    Apply a coordinate transformation to Hamiltonian Monte Carlo (HMC) to 
+    make posterior near MAP more isotropic. 
+    """
+    def __init__(self, X_opt_tensor, L, V, gmm, beta,
+                       Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon):
+        self.X_opt_tensor = X_opt_tensor
+        self.L = L
+        self.V = V
+        self.gmm = gmm
+        self.beta = beta
+        self.Tpmp = Tpmp
+        self.Eb_mean = Eb_mean
+        self.Eb_std = Eb_std
+        self.dw = dw
+        self.df = df
+        self.Eb_epsilon = Eb_epsilon
+
+    def __call__(self, params_dict):
+        u = params_dict["u"]
+        z = self.X_opt_tensor + torch.matmul(self.L, u)
+
+        return custom_energy.apply(
+            z, self.V, self.gmm, self.beta, self.Tpmp,
+            self.Eb_mean, self.Eb_std, self.dw, self.df, self.Eb_epsilon
+        )
