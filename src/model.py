@@ -1,7 +1,7 @@
 from src.amortization import propagate_uncertainty
 from src.utilities import standardize
 from src.optimization import log_posterior_gradient, log_posterior, log_posterior_hessian
-from src.ice import compute_pmp, enthalpy_to_temperature
+from src.ice import enthalpy_to_temperature
 from src.hamiltonianMC import whitened_potential
 
 from gmr.utils import check_random_state
@@ -578,9 +578,6 @@ class model:
         X_samples = self.gmm_prop.sample(n_samples)
         X_samples_mean = np.mean(X_samples, axis=0)
         init_Eb_ori = X_samples_mean.flatten()
-        # init_Eb_reduced = self.pca_x.transform(init_Eb_ori)
-        # init_Eb_ori = init_Eb_ori.T.flatten()
-        # init_Eb_reduced = init_Eb_reduced.T.flatten()
 
         init_Eb_reduced = torch.from_numpy(init_Eb_ori)
         Tpmp = torch.from_numpy(self.pmp).flatten()
