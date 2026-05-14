@@ -314,6 +314,10 @@ class model:
         self.XY_validation = XY_reduced[indices[n_train:n_train + n_validation]]
         self.XY_test = XY_reduced[indices[n_train + n_validation:]]
 
+        # add x and y indices
+        self.y_indices = np.arange(self.ndim_reduced_y)
+        self.x_indices = np.arange(self.ndim_reduced_y, self.ndim_reduced_total)
+
         print("Shape of XY_train:", self.XY_train.shape)
         print("Shape of XY_validation:", self.XY_validation.shape)
         print("Shape of XY_test:", self.XY_test.shape)
@@ -939,7 +943,7 @@ class model:
             # sample from this conditional distribution to get uncertainty
             n_uq_sample = 400
             x_uq_samples = x_pred_gmm.sample(n_uq_sample)
-            x_uq_samples_ori = np.zeros((256*256, n_uq_sample))
+            x_uq_samples_ori = np.zeros((self.nx * self.ny, n_uq_sample))
             # Inverse transform to original space
             # then the uq samples
             for j, sample in enumerate(x_uq_samples):
