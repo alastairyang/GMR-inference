@@ -283,7 +283,7 @@ class model:
         self.ndim_reduced_y     = n_component_y
         return
     
-    def data_split(self, train_ratio=0.8, validation_ratio=0.1, test_ratio=0.1):
+    def split_data(self, train_ratio=0.8, validation_ratio=0.1, test_ratio=0.1):
         """ 
         Split the data into training, validation, and test sets.
         
