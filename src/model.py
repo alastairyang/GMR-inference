@@ -96,7 +96,7 @@ class model:
 
     def load_sim_data(self, X, Y, domain_mask = None, flight_mask=None, show_plot=True):
         """ 
-        Load the simulation data. We assume that these data have been standardized.
+        Load the simulation data without any training splitting. We assume that these data have been standardized.
         
         Parameters
         ----------
@@ -150,6 +150,55 @@ class model:
         self.flight_mask = flight_mask
         return 
     
+    def load_split_data(self, X_train, Y_train,
+                              X_validation, Y_validation,
+                              X_test, Y_test):
+        """ 
+        Load the pre-split data into the model. This is an alternative to the split_data method.
+        
+        Parameters
+        ----------
+        X_train: ndarray of shape (n_samples_train, n_features)
+            The training data in the original space.
+        Y_train: ndarray of shape (n_samples_train, n_targets)
+            The training target data in the original space.
+        X_validation: ndarray of shape (n_samples_validation, n_features)
+            The validation data in the original space.
+        Y_validation: ndarray of shape (n_samples_validation, n_targets)
+            The validation target data in the original space.
+        X_test: ndarray of shape (n_samples_test, n_features)
+            The test data in the original space.
+        Y_test: ndarray of shape (n_samples_test, n_targets)
+            The test target data in the original space.
+        """
+        # Apply fitted PCA on the whole data set to 
+        # the training, validation, and test data separately        
+        def flatten(X):
+            return X.reshape((self.nx * self.ny * self.n_channel, -1)).T
+
+        X_reduced_train = self.pca_x.fit_transform(flatten(X_train))
+        Y_reduced_train = self.pca_y.fit_transform(flatten(Y_train))
+        X_reduced_validation = self.pca_x.transform(flatten(X_validation))
+        Y_reduced_validation = self.pca_y.transform(flatten(Y_validation))
+        X_reduced_test = self.pca_x.transform(flatten(X_test))
+        Y_reduced_test = self.pca_y.transform(flatten(Y_test))
+
+        XY_train      = np.hstack((X_reduced_train, Y_reduced_train))
+        XY_validation = np.hstack((X_reduced_validation, Y_reduced_validation))
+        XY_test       = np.hstack((X_reduced_test, Y_reduced_test))
+        self.XY_train = XY_train
+        self.XY_validation = XY_validation
+        self.XY_test = XY_test
+
+        self.n_samples_train = XY_train.shape[0]
+        self.n_samples_validation = XY_validation.shape[0]
+        self.n_samples_test = XY_test.shape[0]
+
+        print("Shape of XY_train:", self.XY_train.shape)
+        print("Shape of XY_validation:", self.XY_validation.shape)
+        print("Shape of XY_test:", self.XY_test.shape)
+        return
+
     def load_obs_data(self, Y_obs, show_plot=True):
         """  
         Load the observation data.
@@ -260,7 +309,7 @@ class model:
             plt.show()
         return
 
-    def reduce(self, n_component_x, n_component_y):
+    def find_reduction_model(self, n_component_x, n_component_y):
         """ 
         Reduce the dimensionality of the input and output data using PCA.
         
@@ -273,14 +322,19 @@ class model:
         """
         pca_x = PCA(n_components=n_component_x)
         pca_y = PCA(n_components=n_component_y)
-        self.X_reduced = pca_x.fit_transform(self.X_ori)
-        self.Y_reduced = pca_y.fit_transform(self.Y_ori)
+        # self.X_reduced = pca_x.fit_transform(self.X_ori)
+        # self.Y_reduced = pca_y.fit_transform(self.Y_ori)
         self.pca_x = pca_x
         self.pca_y = pca_y
+        print("PCA model saved to self.pca_x and self.pca_y.")
 
         self.ndim_reduced_total = n_component_x + n_component_y
         self.ndim_reduced_x     = n_component_x
         self.ndim_reduced_y     = n_component_y
+
+        # add x and y indices
+        self.y_indices = np.arange(self.ndim_reduced_y)
+        self.x_indices = np.arange(self.ndim_reduced_y, self.ndim_reduced_total)
         return
     
     def split_data(self, train_ratio=0.8, validation_ratio=0.1, test_ratio=0.1):
@@ -313,10 +367,6 @@ class model:
         self.XY_train = XY_reduced[indices[:n_train]]
         self.XY_validation = XY_reduced[indices[n_train:n_train + n_validation]]
         self.XY_test = XY_reduced[indices[n_train + n_validation:]]
-
-        # add x and y indices
-        self.y_indices = np.arange(self.ndim_reduced_y)
-        self.x_indices = np.arange(self.ndim_reduced_y, self.ndim_reduced_total)
 
         print("Shape of XY_train:", self.XY_train.shape)
         print("Shape of XY_validation:", self.XY_validation.shape)
