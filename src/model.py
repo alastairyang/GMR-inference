@@ -322,7 +322,7 @@ class model:
         print("Shape of XY_validation:", self.XY_validation.shape)
         print("Shape of XY_test:", self.XY_test.shape)
         return
-    
+        
     def train_gmm_XY(self, n_components):
         """ 
         Train a Gaussian Mixture Model on the joint distribution of X, Y in their latent space
@@ -363,7 +363,7 @@ class model:
             weight for Y variance from simulation in the covariance estimation
         """
         # find mean and covariance
-        z_optimal, residual_latent = self.compute_optimal_Y_in_latent(beta=beta)
+        z_optimal, residual_latent, residual_recon, residual = self.compute_optimal_Y_in_latent(beta=beta)
 
         residual_latent = residual_latent.reshape(-1, 1)  # shape (ndim_reduced_y, 1)
         residual_latent_outer = residual_latent @ residual_latent.T  # shape (ndim_reduced_y, ndim_reduced_y)
@@ -457,7 +457,7 @@ class model:
             plt.show()
         return 
 
-    def compute_optimal_Y_in_latent(self, beta=0.1):
+    def compute_optimal_Y_in_latent(self, beta=0.1, show_plot=True):
         """  
         Solve the optimization problem with regularization to find the optimal Y in the latent space
 
@@ -501,7 +501,7 @@ class model:
 
             return grad_lik_scaled / beta + grad_prior
 
-        gmm_latent = GMM(n_components=4, random_state=np.random.RandomState(42))
+        gmm_latent = GMM(n_components=2, random_state=np.random.RandomState(42))
         y_latent_all = self.pca_y.transform(self.Y_ori)
 
         n_latent_samples = y_latent_all.shape[0]
@@ -551,25 +551,26 @@ class model:
         residual_latent = self.pca_y.transform(residual.reshape(1, -1)).flatten()
         residual_recon = self.pca_y.inverse_transform(residual_latent.reshape(1, -1)).reshape(self.nx, self.ny)
 
-        plt.figure(figsize=(20, 6))
-        plt.subplot(1,3,1)
-        plt.imshow(Y_obs_reconstructed_optimal_img, cmap='bwr', vmin=-2, vmax=2)
-        plt.title('Reconstructed Observed Y from Optimized Latent z')
-        plt.colorbar()
-        plt.gca().invert_yaxis()
-        plt.subplot(1,3,2)
-        plt.imshow(self.Y_obs_ori.reshape(self.nx, self.ny), cmap='bwr', vmin=-2, vmax=2)
-        plt.title('Original Mean of Observed Y')
-        plt.colorbar()
-        plt.gca().invert_yaxis()
-        # projecting the residue to PCA space and show the reconstruction
-        plt.subplot(1,3,3)
-        plt.imshow(residual_recon, cmap='bwr', vmin=-2, vmax=2)
-        plt.title('PCA Reconstruction of Residual')
-        plt.colorbar()
-        plt.gca().invert_yaxis()
-        plt.show()
-        return z_optimal, residual_latent
+        if show_plot:
+            plt.figure(figsize=(20, 6))
+            plt.subplot(1,3,1)
+            plt.imshow(Y_obs_reconstructed_optimal_img, cmap='bwr', vmin=-2, vmax=2)
+            plt.title('Reconstructed Observed Y from Optimized Latent z')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+            plt.subplot(1,3,2)
+            plt.imshow(self.Y_obs_ori.reshape(self.nx, self.ny), cmap='bwr', vmin=-2, vmax=2)
+            plt.title('Original Mean of Observed Y')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+            # projecting the residue to PCA space and show the reconstruction
+            plt.subplot(1,3,3)
+            plt.imshow(residual_recon, cmap='bwr', vmin=-2, vmax=2)
+            plt.title('PCA Reconstruction of Residual')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
+            plt.show()
+        return z_optimal, residual_latent, residual_recon, residual
     
     def compute_MAP(self, beta=1, n_iter=20, lr=0.5, show_trajectory=False):
         """ 

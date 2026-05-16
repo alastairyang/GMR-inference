@@ -45,3 +45,42 @@ def prediction_error(model, X, Y):
     # Return TOTAL log-likelihood (not mean), so it scales with n
     total_log_likelihood = np.sum(log_prob)
     return total_log_likelihood
+
+def lcurve_analysis(opt_func, beta_prior_list):
+    """
+    Perform L-curve analysis 
+    """
+    solution_norm_list = []
+    residual_norm_list = []
+
+    for beta_prior in beta_prior_list:
+        z_optimal, _, residual, _ = opt_func(beta=beta_prior)
+        solution_norm_list.append(np.linalg.norm(z_optimal, ord=2))
+        residual_norm_list.append(np.linalg.norm(residual, ord=2))
+
+    # Convert to arrays
+    sol = np.array(solution_norm_list)
+    res = np.array(residual_norm_list)
+
+    # --- Normalize to [0, 1] ---
+    res_norm = (res - res.min()) / (res.max() - res.min())
+    sol_norm = (sol - sol.min()) / (sol.max() - sol.min())
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(res_norm, sol_norm, marker='o')
+
+    for i, beta in enumerate(beta_prior_list):
+        plt.annotate(
+            f'{beta:.2e}',
+            (res_norm[i], sol_norm[i]),
+            textcoords="offset points",
+            xytext=(0, 10),
+            ha='center'
+        )
+
+    plt.xlabel('Normalized Residual Norm ||Ax - b||')
+    plt.ylabel('Normalized Solution Norm ||x||')
+    plt.title('L-curve Analysis (Normalized)')
+    plt.grid()
+    plt.show()
+    return 
