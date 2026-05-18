@@ -16,74 +16,80 @@ def shape_check(*arrays):
     shapes = [arr.shape for arr in arrays]
     if len(set(shapes)) > 1:
         raise ValueError("All input arrays must have the same shape, but got shapes: {}".format(shapes))
+def shape_check(X, mean, std):
+    """
+    Checks that mean and std are compatible with X for broadcasting.
+    Allows:
+      - X shape (n_features,)     with mean/std shape (n_features,)
+      - X shape (N, n_features)   with mean/std shape (n_features,)
+      - X shape (N, n_features)   with mean/std shape (N, n_features)
+    """
+    if mean.shape != std.shape:
+        raise ValueError(
+            f"mean and std must have the same shape. "
+            f"Got mean={mean.shape}, std={std.shape}"
+        )
+    # Allow exact match or broadcasting along first dimension
+    if X.shape != mean.shape and X.shape[-1] != mean.shape[-1]:
+        raise ValueError(
+            f"Shape mismatch: X={X.shape} is not compatible with "
+            f"mean/std={mean.shape}. Expected X.shape[-1] == mean.shape[-1]."
+        )
+
 
 def reverse_standardize(X, mean, std, method='standard', epsilon=None):
     """
-    reverse z-score standardization (standard)
-    or with relaxation 
+    Reverse z-score standardization.
+    Vectorized across the first dimension of X.
 
-    Parameters:
--------
-    X: array, shape (n_samples, n_features)
-        standardized data to be reverse standardized
-    mean: array, shape (n_features,)
-        mean used for standardization
-    std: array, shape (n_features,)
-        std used for standardization
-    epsilon: float, optional
-        small value added to std for relaxation method
-    method: str
-        method for reverse standardization, 'standard' or 'relaxation'
-
+    Parameters
+    ----------
+    X : array, shape (n_features,) or (N, n_features)
+    mean : array, shape (n_features,)
+    std  : array, shape (n_features,)
+    method : 'standard' or 'relaxation'
+    epsilon : float, required if method='relaxation'
     """
-    # first check X, mean, and std have the same shape
-    # or it will do outer product and our computer will EXPLODE SIR
     shape_check(X, mean, std)
+
     if method == 'standard':
         return X * std + mean
+
     elif method == 'relaxation':
         if epsilon is None:
             raise ValueError("Epsilon must be provided for relaxation method")
-        else:
-            return X * (std + epsilon) + mean
+        return X * (std + epsilon) + mean
+
     else:
-        raise ValueError("Unknown method: {}".format(method))
-    
+        raise ValueError(f"Unknown method: {method}")
+
+
 def standardize(X, mean, std, method='standard', epsilon=None):
     """
-    z-score standardization (standard)
-    or with relaxation 
+    Z-score standardization.
+    Vectorized across the first dimension of X.
 
-    Parameters:
-    -------
-    X: array, shape (n_samples, n_features)
-        data to be standardized
-    mean: array, shape (n_features,)
-        mean used for standardization   
-
-    std: array, shape (n_features,)
-        std used for standardization
-    epsilon: float, optional
-        small value added to std for relaxation method
-    method: str
-        method for standardization, 'standard' or 'relaxation'
-
-
+    Parameters
+    ----------
+    X : array, shape (n_features,) or (N, n_features)
+    mean : array, shape (n_features,)
+    std  : array, shape (n_features,)
+    method : 'standard' or 'relaxation'
+    epsilon : float, required if method='relaxation'
     """
-    # first check X, mean, and std have the same shape
-    # or it will do outer product and our computer will EXPLODE SIR
     shape_check(X, mean, std)
+
     if method == 'standard':
-        print("Using standard z-score standardization")
         return (X - mean) / std
+
     elif method == 'relaxation':
         if epsilon is None:
             raise ValueError("Epsilon must be provided for relaxation method")
-        else:
-            print("Using relaxation z-score standardization with epsilon =", epsilon)
-            return (X - mean) / (std + epsilon)
+        return (X - mean) / (std + epsilon)
+
     else:
-        raise ValueError("Unknown method: {}".format(method))
+        raise ValueError(f"Unknown method: {method}")
+
 # ---------- NOT ACTIVELY USED ----------
 def build_distance_matrix(x, y):
     """

@@ -1,5 +1,5 @@
 from src.amortization import propagate_uncertainty
-from src.utilities import standardize
+from src.utilities import standardize, reverse_standardize
 from src.optimization import log_posterior_gradient, log_posterior, log_posterior_hessian
 from src.ice import enthalpy_to_temperature
 from src.hamiltonianMC import whitened_potential
@@ -788,7 +788,12 @@ class model:
         Eb_std_data  = Eb_std_data.numpy()
         Eb_mean_data = Eb_mean_data.numpy()
         Eb_MAP = self.pca_x.inverse_transform(X_optimized.reshape(1, -1)).reshape(self.nx, self.ny)
-        Eb_MAP_ori = torch.from_numpy(Eb_MAP * Eb_std_data.reshape(self.nx, self.ny) + Eb_mean_data.reshape(self.nx, self.ny))
+        Eb_MAP_ori = torch.from_numpy(reverse_standardize(Eb_MAP, 
+                                                          Eb_mean_data, 
+                                                          Eb_std_data, 
+                                                          method='relaxation', 
+                                                          epsilon=self.X_epsilon)
+                                                          ).reshape(self.nx, self.ny)
         Tb_MAP = enthalpy_to_temperature(Eb_MAP_ori.flatten(), Tpmp.flatten()).reshape(self.nx, self.ny).numpy()
         Tb_MAP[self.domain_mask == False] = np.nan
 
@@ -859,9 +864,9 @@ class model:
         )
         nuts_kernel = mcmc.NUTS(
             potential_fn=potential,
-            adapt_step_size=True,       # NUTS easily finds a large step size in spherical space
-            adapt_mass_matrix=True,    # Keep mass matrix as Identity!
-            max_tree_depth=12           # Let it run deep if it wants, it will be fast now
+            adapt_step_size=True, 
+            adapt_mass_matrix=True, 
+            max_tree_depth=12    
         )
 
         # 4. Initialize and Run MCMC
@@ -900,7 +905,10 @@ class model:
         # ------------------------ Extracting and Analyzing HMC Samples ------------------------
         # u_samples: shape (N, M) numpy array
         if loading:
-            self.mcmc_md = torch.load(f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
+            mcmc_dict = torch.load(f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
+            mcmc_run = mcmc_dict["mcmc_run"]
+            potential = mcmc_dict["potential"]
+            self.mcmc_md = mcmc_run
 
         H_pot = torch.tensor(-self.hessian_MAP, dtype=torch.float64)
         # stable matrix inversion
@@ -967,10 +975,18 @@ class model:
         Eb_samples_norm = self.pca_x.inverse_transform(hmc_samples) 
         Eb_std_flat     = self.X_std.flatten()
         Eb_mean_flat    = self.X_mean.flatten()
-        Eb_samples_ori  = Eb_samples_norm * Eb_std_flat + Eb_mean_flat
+
+        Eb_samples_ori = np.zeros_like(Eb_samples_norm)
+        for sample in range(num_samples):
+            Eb_samples_ori[sample] = reverse_standardize(Eb_samples_norm[sample], 
+                                                         mean=Eb_mean_flat, 
+                                                         std=Eb_std_flat, 
+                                                         method='relaxation', 
+                                                         epsilon=self.X_epsilon)
 
         # save the Eb_samples_ori for later analysis
         np.save(f"../data/posterior-hmc-samples/Eb_samples_ori_beta_{beta}.npy", Eb_samples_ori)
+        np.save(f"../data/posterior-hmc-samples/Eb_samples_norm_beta_{beta}.npy", Eb_samples_norm)
 
         Tb_samples = np.zeros_like(Eb_samples_ori)
         Tpmp_flat  = self.pmp.flatten()
@@ -1053,83 +1069,83 @@ class model:
         plt.tight_layout()
         plt.show()
         return 
-    # def plot_gmm_samples(self, n_samples=3):
-    #     """   
-    #     Visualize GMM predictions from random test samples. Default to 3 samples. 
+    def plot_gmm_samples_pca(self, n_samples=3):
+        """   
+        Visualize GMM predictions from random test samples. Default to 3 samples. 
         
-    #     """
-    #     n_test_samples_plot = 3 
-    #     rand_idx = np.random.choice(range(self.n_samples_test), size=n_test_samples_plot, replace=False)
-    #     for i in rand_idx:
-    #         y_test = self.XY_test[i, :self.ndim_reduced_y]  # Y part
-    #         x_test = self.XY_test[i, self.ndim_reduced_y:]  # X part
+        """
+        n_test_samples_plot = n_samples
+        rand_idx = np.random.choice(range(self.n_samples_test), size=n_test_samples_plot, replace=False)
+        for i in rand_idx:
+            y_test = self.XY_test[i, :self.ndim_reduced_y]  # Y part
+            x_test = self.XY_test[i, self.ndim_reduced_y:]  # X part
 
-    #         # Predict X given Y
-    #         condition_index = np.arange(self.ndim_reduced_y)
-    #         x_pred_gmm = self.gmm.condition(condition_index, y_test)
+            # Predict X given Y
+            condition_index = np.arange(self.ndim_reduced_y)
+            x_pred_gmm = self.gmm.condition(condition_index, y_test)
 
-    #         # sample from this conditional distribution to get uncertainty
-    #         n_uq_sample = 400
-    #         x_uq_samples = x_pred_gmm.sample(n_uq_sample)
-    #         x_uq_samples_ori = np.zeros((self.nx * self.ny, n_uq_sample))
-    #         # Inverse transform to original space
-    #         # then the uq samples
-    #         for j, sample in enumerate(x_uq_samples):
-    #             x_uq_samples_ori[:,j] = self.pca_x.inverse_transform(sample)
+            # sample from this conditional distribution to get uncertainty
+            n_uq_sample = 400
+            x_uq_samples = x_pred_gmm.sample(n_uq_sample)
+            x_uq_samples_ori = np.zeros((self.nx * self.ny, n_uq_sample))
+            # Inverse transform to original space
+            # then the uq samples
+            for j, sample in enumerate(x_uq_samples):
+                x_uq_samples_ori[:,j] = self.pca_x.inverse_transform(sample)
 
-    #         # compute the mean from the ensemble
-    #         x_pred_mean = np.mean(x_uq_samples_ori, axis=1)
-    #         x_pred_img = x_pred_mean.reshape(self.nx, self.ny)
+            # compute the mean from the ensemble
+            x_pred_mean = np.mean(x_uq_samples_ori, axis=1)
+            x_pred_img = x_pred_mean.reshape(self.nx, self.ny)
             
-    #         # compute std along each dimension of the uq samples
-    #         x_uq_std = np.std(x_uq_samples_ori, axis=1)
-    #         x_uq_std = x_uq_std.reshape(self.nx, self.ny)
+            # compute std along each dimension of the uq samples
+            x_uq_std = np.std(x_uq_samples_ori, axis=1)
+            x_uq_std = x_uq_std.reshape(self.nx, self.ny)
 
-    #         # Reshape X for visualization
-    #         x_test_original = self.pca_x.inverse_transform(x_test.reshape(1, -1))
-    #         x_test_img = x_test_original.reshape(self.nx, self.ny)
+            # Reshape X for visualization
+            x_test_original = self.pca_x.inverse_transform(x_test.reshape(1, -1))
+            x_test_img = x_test_original.reshape(self.nx, self.ny)
 
-    #         # observed Y
-    #         obs_Y = self.pca_y.inverse_transform(y_test)
-    #         obs_Y = obs_Y.reshape(self.nx, self.ny)
-    #         # Plotting: five columns: observed Y, True X, predicted X, error (RMSE), uncertainty (stddev)
-    #         plt.figure(figsize=(24, 4))
-    #         plt.subplot(1, 5, 1)
-    #         plt.imshow(obs_Y, cmap='bwr', vmin=-2, vmax=2)
-    #         plt.title('Observed Y')
-    #         plt.colorbar()
-    #         # invert y axis
-    #         plt.gca().invert_yaxis()
+            # observed Y
+            obs_Y = self.pca_y.inverse_transform(y_test)
+            obs_Y = obs_Y.reshape(self.nx, self.ny)
+            # Plotting: five columns: observed Y, True X, predicted X, error (RMSE), uncertainty (stddev)
+            plt.figure(figsize=(24, 4))
+            plt.subplot(1, 5, 1)
+            plt.imshow(obs_Y, cmap='bwr', vmin=-2, vmax=2)
+            plt.title('Observed Y')
+            plt.colorbar()
+            # invert y axis
+            plt.gca().invert_yaxis()
 
-    #         plt.subplot(1, 5, 2)
-    #         plt.imshow(x_test_img, cmap='bwr', vmin=-2, vmax=2)
-    #         plt.title('True X')
-    #         plt.colorbar()
-    #         plt.gca().invert_yaxis()
+            plt.subplot(1, 5, 2)
+            plt.imshow(x_test_img, cmap='bwr', vmin=-2, vmax=2)
+            plt.title('True X')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
 
-    #         plt.subplot(1, 5, 3)
-    #         plt.imshow(x_pred_img, cmap='bwr', vmin=-2, vmax=2)
-    #         plt.title('Predicted X')
-    #         plt.colorbar()
-    #         plt.gca().invert_yaxis()
+            plt.subplot(1, 5, 3)
+            plt.imshow(x_pred_img, cmap='bwr', vmin=-2, vmax=2)
+            plt.title('Predicted X')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
             
-    #         plt.subplot(1, 5, 4)
-    #         rmse_img = np.sqrt((x_test_img - x_pred_img) ** 2)
-    #         plt.imshow(rmse_img, cmap='hot', vmin = 0, vmax = 1)
-    #         plt.title('RMSE')
-    #         plt.colorbar()
-    #         plt.gca().invert_yaxis()
+            plt.subplot(1, 5, 4)
+            rmse_img = np.sqrt((x_test_img - x_pred_img) ** 2)
+            plt.imshow(rmse_img, cmap='hot', vmin = 0, vmax = 1)
+            plt.title('RMSE')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
 
-    #         plt.subplot(1, 5, 5)
-    #         plt.imshow(x_uq_std, cmap='hot', vmin = 0, vmax = 1)
-    #         plt.title('Uncertainty (stddev)')
-    #         plt.colorbar()
-    #         plt.gca().invert_yaxis()
+            plt.subplot(1, 5, 5)
+            plt.imshow(x_uq_std, cmap='hot', vmin = 0, vmax = 1)
+            plt.title('Uncertainty (stddev)')
+            plt.colorbar()
+            plt.gca().invert_yaxis()
 
-    #         plt.suptitle(f'Test Sample {i+1}')
-    #         # save the figure, dpi = 300
-    #         plt.show()
-    def plot_gmm_samples(self, n_samples=3):
+            plt.suptitle(f'Test Sample {i+1}')
+            # save the figure, dpi = 300
+            plt.show()
+    def plot_gmm_samples_pls(self, n_samples=3):
         n_test_samples_plot = n_samples
         rand_idx = np.random.choice(range(self.n_samples_test), size=n_test_samples_plot, replace=False)
         for i in rand_idx:
