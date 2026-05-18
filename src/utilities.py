@@ -224,3 +224,33 @@ def low_high_percentile(samples, log_probs, low_percentile=5, high_percentile=95
     low_bound = samples_sorted[idx_low]  
     high_bound = samples_sorted[idx_high]  
     return low_bound, high_bound
+
+def read_exp(filepath):
+    """
+    Parse an Elmer/Ice .exp file.
+    Handles multi-segment files (segments separated by NaN NaN rows).
+    Returns x, y arrays for the first (or only) segment, with NaNs stripped.
+    """
+    xs, ys = [], []
+    with open(filepath, 'r') as f:
+        for line in f:
+            line = line.strip()
+            # skip header/comment lines
+            if not line or line.startswith('#') or line.startswith('!'):
+                continue
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            try:
+                x_val, y_val = float(parts[0]), float(parts[1])
+                xs.append(x_val)
+                ys.append(y_val)
+            except ValueError:
+                continue
+
+    xs = np.array(xs)
+    ys = np.array(ys)
+
+    # strip NaN rows (segment separators)
+    valid = ~(np.isnan(xs) | np.isnan(ys))
+    return xs[valid], ys[valid]
