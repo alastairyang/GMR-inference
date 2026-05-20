@@ -1,7 +1,6 @@
 from tabnanny import verbose
 import numpy as np
 from gmr import MVN
-from gmr.gmm import _safe_probability_density
 from src.amortization import to_log_probability_density
 from src.ice import enthalpy_to_temperature
 from src.utilities import reverse_standardize, shape_check
