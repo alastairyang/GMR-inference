@@ -693,7 +693,7 @@ class model:
             plt.show()
         return z_optimal, residual_latent, residual_recon, residual
     
-    def compute_MAP(self, beta=1, n_iter=20, lr=0.5, show_trajectory=False):
+    def compute_MAP(self, beta=1, n_iter=20, lr=0.5, show_plot=True, show_trajectory=False):
         """ 
         Compute the Maximum A Posteriori
         """
@@ -805,21 +805,22 @@ class model:
         self.hessian_MAP = hessian
         self.X_MAP = X_optimized
 
-        plt.figure(figsize=(6, 10))
-        plt.subplot(2, 1, 1)
-        plt.imshow(Tb_MAP, cmap='RdBu_r', vmin=255, vmax=273.15)
-        plt.title('MAP Estimate of E_b')
-        plt.colorbar()
-        plt.gca().invert_yaxis()
-        dT_to_pmp = Tpmp.reshape(self.nx, self.ny) - Tb_MAP
-        dT_to_pmp[self.domain_mask == False] = np.nan
-        # plot as contour lines
-        plt.subplot(2, 1, 2)
-        plt.imshow(dT_to_pmp, cmap='hot', vmin=0, vmax=5)
-        plt.title('MAP Estimate of T_b - T_pmp')
-        plt.colorbar()
-        plt.gca().invert_yaxis()
-        plt.show()
+        if show_plot:
+            plt.figure(figsize=(6, 10))
+            plt.subplot(2, 1, 1)
+            plt.imshow(Tb_MAP, cmap='RdBu_r', vmin=255, vmax=273.15)
+            plt.title('MAP Estimate of E_b')
+            plt.colorbar(label='Tb at MAP')
+            plt.gca().invert_yaxis()
+            dT_to_pmp = Tpmp.reshape(self.nx, self.ny) - Tb_MAP
+            dT_to_pmp[self.domain_mask == False] = np.nan
+            # plot as contour lines
+            plt.subplot(2, 1, 2)
+            plt.imshow(dT_to_pmp, cmap='hot', vmin=0, vmax=5)
+            plt.title('MAP Estimate of T_b - T_pmp')
+            plt.colorbar(label='ΔT')
+            plt.gca().invert_yaxis()
+            plt.show()
 
         if show_trajectory:
             # plot all the snapshots to see the optimization trajectory
@@ -831,9 +832,8 @@ class model:
                 Tb_snapshot = enthalpy_to_temperature(Eb_snapshot_ori.flatten(), Tpmp.flatten()).reshape(256, 256)
                 plt.subplot(2, n_snapshots//2, i+1)
                 plt.imshow(Tb_snapshot * self.domain_mask, cmap='RdBu_r', vmin=250, vmax=273.15)
-                
+                plt.colorbar(label='Tb at MAP')
                 plt.title(f'Iteration {i+1}')
-                plt.colorbar()
                 plt.gca().invert_yaxis()
             plt.suptitle('Optimization Trajectory of T_b')
             plt.show()
