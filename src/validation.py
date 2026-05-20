@@ -84,3 +84,15 @@ def lcurve_analysis(opt_func, beta_prior_list):
     plt.grid()
     plt.show()
     return 
+
+def split_evidence(evidence, k=20):
+    """
+    Splitting the basal evidence into k non-overlapping subsets for cross-validation.
+    """
+    # shuffle evidence
+    np.random.seed(42)
+    np.random.shuffle(evidence)
+    subsets = np.array_split(evidence, k)
+    return subsets
+
+

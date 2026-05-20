@@ -324,6 +324,9 @@ class model:
         self.thawed_fractional_area = thawed_frac_area
         self.frozen_mask            = frozen_mask
         self.frozen_fractional_area = frozen_frac_area
+        # combined mask
+        self.combined_mask = np.logical_or(thawed_mask, frozen_mask)
+        self.combined_frac_area = thawed_frac_area + frozen_frac_area
         # pmp may be defined beyond domain bound
         self.pmp                    = pmp
         pmp_plot = pmp.copy().reshape(self.nx, self.ny)
@@ -787,7 +790,7 @@ class model:
         X_optimized  = X.detach().numpy()
         Eb_std_data  = Eb_std_data.numpy()
         Eb_mean_data = Eb_mean_data.numpy()
-        Eb_MAP = self.pca_x.inverse_transform(X_optimized.reshape(1, -1)).reshape(self.nx, self.ny)
+        Eb_MAP = self.pca_x.inverse_transform(X_optimized.reshape(1, -1)) #.reshape(self.nx, self.ny)
         Eb_MAP_ori = torch.from_numpy(reverse_standardize(Eb_MAP, 
                                                           Eb_mean_data, 
                                                           Eb_std_data, 
