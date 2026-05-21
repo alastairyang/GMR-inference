@@ -1026,7 +1026,8 @@ class model:
             Tb_samples[i] = enthalpy_to_temperature(Eb_i, Tpmp_i).numpy()
 
         # Calculate Standard Deviation directly across the sample axis
-        self.Tb_std = np.std(Tb_samples, axis=0).reshape(256, 256)
+        self.Tb_std  = np.std(Tb_samples, axis=0).reshape(256, 256)
+        self.Tb_mean = np.mean(Tb_samples, axis=0).reshape(256, 256)
 
         # Summarize the HPD region as a band
         self.Tb_p5 = Tb_samples[sorted_indices[-n_keep:]].min(axis=0)
@@ -1035,8 +1036,10 @@ class model:
         # self.Tb_p95 = enthalpy_to_temperature(Eb_p95, Tpmp_flat, istorch=False)
 
         self.Tb_p5 = self.Tb_p5.reshape(self.nx, self.ny)
+        self.Tb_mean = self.Tb_mean.reshape(self.nx, self.ny)
         self.Tb_p95 = self.Tb_p95.reshape(self.nx, self.ny)
         self.Tb_p5[self.domain_mask == False] = np.nan
+        self.Tb_mean[self.domain_mask == False] = np.nan
         self.Tb_p95[self.domain_mask == False] = np.nan
 
         return 
