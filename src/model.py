@@ -845,12 +845,26 @@ class model:
         """
 
         H_pot = torch.tensor(-self.hessian_MAP, dtype=torch.float64)
-        # stable matrix inversion
-        jitter = 1e-5 * torch.eye(H_pot.shape[0], dtype=torch.float64)
-        cov_matrix = torch.inverse(H_pot + jitter)
+        eigenvalues = torch.linalg.eigvalsh(H_pot)
+        print("Min eigenvalue:", eigenvalues.min().item())
+        print("Max eigenvalue:", eigenvalues.max().item())
+        print("Condition number:", (eigenvalues.max() / eigenvalues.min()).item())
 
-        # L is the lower triangular Cholesky factor
-        L = torch.linalg.cholesky(cov_matrix)
+        # jitter = 1e-5 * torch.eye(H_pot.shape[0], dtype=torch.float64)
+        # H_jit = H_pot + jitter
+        # L_H = torch.linalg.cholesky(H_jit)  
+        for jitter_exp in [1e-5, 1e-4, 1e-3, 1e-2]:
+            try:
+                jitter = jitter_exp * torch.eye(H_pot.shape[0], dtype=torch.float64)
+                L_H = torch.linalg.cholesky(H_pot + jitter)
+                print(f"Cholesky succeeded with jitter={jitter_exp}")
+                break
+            except RuntimeError:
+                print(f"Cholesky failed with jitter={jitter_exp}, trying larger...")
+       
+        # L for covariance is the inverse of L_H (lower triangular solve)
+        L = torch.linalg.solve_triangular(L_H, 
+            torch.eye(L_H.shape[0], dtype=torch.float64), upper=False).T
         X_opt_tensor = torch.tensor(self.X_MAP, dtype=torch.float64)
         potential = whitened_potential(
             X_opt_tensor=X_opt_tensor,
@@ -865,12 +879,22 @@ class model:
             df=self.frozen_fractional_area,
             Eb_epsilon=self.X_epsilon
         )
+        # nuts_kernel = mcmc.NUTS(
+        #     potential_fn=potential,
+        #     adapt_step_size=True, 
+        #     adapt_mass_matrix=False, 
+        #     max_tree_depth=12    
+        # )
+        # Option A: Identity initialization, let NUTS adapt fully
         nuts_kernel = mcmc.NUTS(
             potential_fn=potential,
-            adapt_step_size=True, 
-            adapt_mass_matrix=True, 
-            max_tree_depth=12    
+            adapt_step_size=True,
+            adapt_mass_matrix=True,
+            full_mass=False,        # diagonal mass matrix — much cheaper, usually sufficient
+            max_tree_depth=12,
+            target_accept_prob=0.8
         )
+
 
         # 4. Initialize and Run MCMC
         # Since z_initial = MAP, the corresponding u_initial is exactly a vector of 0s
@@ -1000,10 +1024,6 @@ class model:
             Tpmp_i = torch.from_numpy(Tpmp_flat) if isinstance(Tpmp_flat, np.ndarray) else Tpmp_flat
             
             Tb_samples[i] = enthalpy_to_temperature(Eb_i, Tpmp_i).numpy()
-
-        # convert the 5% and 95% 
-        Eb_p5 = self.pca_x.inverse_transform(z_p5) * Eb_std_flat + Eb_mean_flat
-        Eb_p95 = self.pca_x.inverse_transform(z_p95) * Eb_std_flat + Eb_mean_flat
 
         # Calculate Standard Deviation directly across the sample axis
         self.Tb_std = np.std(Tb_samples, axis=0).reshape(256, 256)
