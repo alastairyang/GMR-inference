@@ -73,3 +73,26 @@ class whitened_potential:
             z, self.V, self.gmm, self.beta, self.Tpmp,
             self.Eb_mean, self.Eb_std, self.dw, self.df, self.Eb_epsilon
         )
+    
+class regular_potential:
+    """
+    Direct potential in z-space (no whitening/Hessian preconditioning).
+    Used for exploratory runs where the posterior landscape is unknown.
+    """
+    def __init__(self, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon):
+        self.V = V
+        self.gmm = gmm
+        self.beta = beta
+        self.Tpmp = Tpmp
+        self.Eb_mean = Eb_mean
+        self.Eb_std = Eb_std
+        self.dw = dw
+        self.df = df
+        self.Eb_epsilon = Eb_epsilon
+
+    def __call__(self, params_dict):
+        z = params_dict["z"]
+        return custom_energy.apply(
+            z, self.V, self.gmm, self.beta, self.Tpmp,
+            self.Eb_mean, self.Eb_std, self.dw, self.df, self.Eb_epsilon
+        )

@@ -2,7 +2,7 @@ from src.amortization import propagate_uncertainty
 from src.utilities import standardize, reverse_standardize
 from src.optimization import log_posterior_gradient, log_posterior, log_posterior_hessian
 from src.ice import enthalpy_to_temperature
-from src.hamiltonianMC import whitened_potential
+from src.hamiltonianMC import whitened_potential, regular_potential
 
 from gmr.utils import check_random_state
 from gmr import GMM
@@ -839,36 +839,19 @@ class model:
             plt.show()
         return
     
-    def derive_posterior(self, beta=1, warmup_steps=1000, num_samples=4000):
+    def explore_posterior(self, beta=1, warmup_steps=2000, explore_samples=500,
+                        component_for_modes=0):
         """
-        Derive the posterior distribution with Hamiltonian Monte Carlo
+        Stage 1: Short exploratory NUTS run in z-space to discover the number
+        and locations of posterior modes. Results are stored on self for use
+        by derive_posterior().
         """
+        import matplotlib.pyplot as plt
+        from scipy.stats import gaussian_kde
+        from scipy.signal import find_peaks
 
-        H_pot = torch.tensor(-self.hessian_MAP, dtype=torch.float64)
-        eigenvalues = torch.linalg.eigvalsh(H_pot)
-        print("Min eigenvalue:", eigenvalues.min().item())
-        print("Max eigenvalue:", eigenvalues.max().item())
-        print("Condition number:", (eigenvalues.max() / eigenvalues.min()).item())
-
-        # jitter = 1e-5 * torch.eye(H_pot.shape[0], dtype=torch.float64)
-        # H_jit = H_pot + jitter
-        # L_H = torch.linalg.cholesky(H_jit)  
-        for jitter_exp in [1e-5, 1e-4, 1e-3, 1e-2]:
-            try:
-                jitter = jitter_exp * torch.eye(H_pot.shape[0], dtype=torch.float64)
-                L_H = torch.linalg.cholesky(H_pot + jitter)
-                print(f"Cholesky succeeded with jitter={jitter_exp}")
-                break
-            except RuntimeError:
-                print(f"Cholesky failed with jitter={jitter_exp}, trying larger...")
-       
-        # L for covariance is the inverse of L_H (lower triangular solve)
-        L = torch.linalg.solve_triangular(L_H, 
-            torch.eye(L_H.shape[0], dtype=torch.float64), upper=False).T
-        X_opt_tensor = torch.tensor(self.X_MAP, dtype=torch.float64)
-        potential = whitened_potential(
-            X_opt_tensor=X_opt_tensor,
-            L=L,
+        # ── Build potential ───────────────────────────────────────────────────
+        potential = regular_potential(
             V=self.pca_x.components_,
             gmm=self.gmm_prop,
             beta=beta,
@@ -879,49 +862,270 @@ class model:
             df=self.frozen_fractional_area,
             Eb_epsilon=self.X_epsilon
         )
-        # nuts_kernel = mcmc.NUTS(
-        #     potential_fn=potential,
-        #     adapt_step_size=True, 
-        #     adapt_mass_matrix=False, 
-        #     max_tree_depth=12    
-        # )
-        # Option A: Identity initialization, let NUTS adapt fully
-        nuts_kernel = mcmc.NUTS(
+
+        X_opt_tensor = torch.tensor(self.X_MAP, dtype=torch.float64)
+
+        # ── Exploratory NUTS run ──────────────────────────────────────────────
+        print("\n" + "=" * 60)
+        print("EXPLORE: Exploratory run to discover modes")
+        print(f"         warmup={warmup_steps}, samples={explore_samples}")
+        print("=" * 60)
+
+        nuts_explore = mcmc.NUTS(
             potential_fn=potential,
             adapt_step_size=True,
             adapt_mass_matrix=True,
-            full_mass=False,        # diagonal mass matrix — much cheaper, usually sufficient
-            max_tree_depth=12,
+            full_mass=False,
+            max_tree_depth=10,
             target_accept_prob=0.8
         )
-
-
-        # 4. Initialize and Run MCMC
-        # Since z_initial = MAP, the corresponding u_initial is exactly a vector of 0s
-        initial_params = {"u": torch.zeros_like(X_opt_tensor)}
-
-        num_samples = num_samples
-        warmup_steps = warmup_steps  # Space is perfectly isotropic now, warmup is incredibly fast
-
-        # run HMC
-        mcmc_run = mcmc.MCMC(
-            nuts_kernel,
-            num_samples=num_samples,
+        mcmc_explore = mcmc.MCMC(
+            nuts_explore,
+            num_samples=explore_samples,
             warmup_steps=warmup_steps,
-            initial_params=initial_params
+            initial_params={"z": X_opt_tensor}
         )
+        mcmc_explore.run()
 
-        print(f"Starting HMC sampling: {num_samples} samples, {warmup_steps} warmup...")
-        mcmc_run.run(extra_fields=("potential_energy",))
+        z_explore = mcmc_explore.get_samples()["z"].cpu()  # (explore_samples, D)
+        print(f"Exploratory samples collected: {z_explore.shape}")
 
-        # save a dictionary containing both mcmc_run and the potential for later analysis
-        posterior_dict = {
-            "mcmc_run": mcmc_run,
-            "potential": potential
-        }
-        torch.save(posterior_dict, f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
-        self.mcmc_md = mcmc_run
-        return 
+        # ── KDE-based mode detection ──────────────────────────────────────────
+        comp_samples = z_explore[:, component_for_modes].numpy()
+
+        kde = gaussian_kde(comp_samples, bw_method=0.3)
+        x_grid = np.linspace(comp_samples.min() - 5, comp_samples.max() + 5, 1000)
+        density = kde(x_grid)
+
+        peaks, _ = find_peaks(density, prominence=0.001, distance=20)
+        mode_values = x_grid[peaks]
+
+        print(f"\nDetected {len(peaks)} mode(s) in PCA Component {component_for_modes}:")
+        for i, mv in enumerate(mode_values):
+            print(f"  Mode {i + 1}: Component {component_for_modes} ≈ {mv:.3f}")
+
+        # ── Find closest exploratory sample to each mode peak ─────────────────
+        mode_inits = []
+        for mv in mode_values:
+            distances = (z_explore[:, component_for_modes] - mv).abs()
+            closest_idx = distances.argmin()
+            z_init = z_explore[closest_idx].clone()
+            mode_inits.append(z_init)
+            print(f"  Init z[{component_for_modes}] = {z_init[component_for_modes]:.3f}  "
+                f"(target {mv:.3f})")
+
+        # ── Diagnostic plots ──────────────────────────────────────────────────
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+        axes[0].plot(x_grid, density, 'k-', lw=2, label='KDE')
+        axes[0].scatter(x_grid[peaks], density[peaks], color='red', zorder=5,
+                        s=80, label='Detected modes')
+        for mv in mode_values:
+            axes[0].axvline(mv, color='red', linestyle='--', alpha=0.5)
+        axes[0].set_xlabel(f"PCA Component {component_for_modes} (z-space)")
+        axes[0].set_ylabel("Density")
+        axes[0].set_title("Explore: Mode Discovery (KDE)")
+        axes[0].legend()
+
+        axes[1].plot(comp_samples, alpha=0.6, lw=0.8, color='steelblue')
+        for i, mv in enumerate(mode_values):
+            axes[1].axhline(mv, color='red', linestyle='--', alpha=0.7,
+                            label=f"Mode {i + 1} ≈ {mv:.2f}")
+        axes[1].set_xlabel("Sample index")
+        axes[1].set_ylabel(f"PCA Component {component_for_modes}")
+        axes[1].set_title("Explore: Trace of Diagnostic Component")
+        axes[1].legend()
+
+        plt.tight_layout()
+        plt.savefig(f"../data/posterior-hmc-models/explore_modes_beta_{beta}.png", dpi=150)
+        plt.close()
+        print(f"Diagnostic plot saved.")
+
+        # ── Store results on self for derive_posterior() ──────────────────────
+        self._explore_beta             = beta
+        self._explore_z_samples        = z_explore
+        self._explore_mode_values      = mode_values
+        self._explore_mode_inits       = mode_inits
+        self._explore_component        = component_for_modes
+        self._explore_potential        = potential
+
+        print(f"\nexplore_posterior() complete. "
+            f"Call derive_posterior() to run full sampling.")
+
+
+    def derive_posterior(self, warmup_steps=2000, num_samples=2000):
+        """
+        Stage 2: Full NUTS chains initialized at each mode discovered by
+        explore_posterior(). All parameters are fetched from self.
+        Must call explore_posterior() first.
+        """
+        # ── Guard ─────────────────────────────────────────────────────────────
+        if not hasattr(self, '_explore_mode_inits'):
+            raise RuntimeError(
+                "No exploration results found. Run explore_posterior() first."
+            )
+
+        beta       = self._explore_beta
+        mode_inits = self._explore_mode_inits
+        mode_values = self._explore_mode_values
+        potential  = self._explore_potential
+
+        print("\n" + "=" * 60)
+        print(f"DERIVE: Full sampling from {len(mode_inits)} mode(s)")
+        print(f"        warmup={warmup_steps}, samples={num_samples} per mode")
+        print("=" * 60)
+
+        # ── Run one full NUTS chain per mode ──────────────────────────────────
+        all_samples = []
+        log_probs_at_init = []
+
+        for mode_idx, z_init in enumerate(mode_inits):
+            print(f"\n--- Mode {mode_idx + 1} / {len(mode_inits)} "
+                f"(Component {self._explore_component} ≈ "
+                f"{mode_values[mode_idx]:.3f}) ---")
+
+            with torch.no_grad():
+                lp = -potential({"z": z_init}).item()
+                log_probs_at_init.append(lp)
+                print(f"  Log prob at initialization: {lp:.4f}")
+
+            nuts_kernel = mcmc.NUTS(
+                potential_fn=potential,
+                adapt_step_size=True,
+                adapt_mass_matrix=True,
+                full_mass=False,
+                max_tree_depth=12,
+                target_accept_prob=0.8
+            )
+            mcmc_run = mcmc.MCMC(
+                nuts_kernel,
+                num_samples=num_samples,
+                warmup_steps=warmup_steps,
+                initial_params={"z": z_init}
+            )
+            mcmc_run.run(extra_fields=("potential_energy",))
+
+            samples = mcmc_run.get_samples()["z"].cpu()  # (num_samples, D)
+            all_samples.append(samples)
+            print(f"  Collected {samples.shape[0]} samples.")
+
+        # ── Combine with softmax-weighted mode probabilities ──────────────────
+        log_weights = torch.tensor(log_probs_at_init, dtype=torch.float64)
+        weights = torch.softmax(log_weights, dim=0).numpy()
+
+        print(f"\nMode weights (softmax of log probs at mode centers):")
+        for i, w in enumerate(weights):
+            print(f"  Mode {i + 1}: {w:.4f}")
+
+        n_total = num_samples * len(mode_inits)
+        combined_parts = []
+        for i, (samples, w) in enumerate(zip(all_samples, weights)):
+            n_i = int(w * n_total)
+            combined_parts.append(samples[:n_i])
+            print(f"  Mode {i + 1}: using {n_i} / {samples.shape[0]} samples")
+
+        combined = torch.cat(combined_parts, dim=0)
+        print(f"\nTotal combined samples: {combined.shape[0]}")
+
+        # ── Save everything ───────────────────────────────────────────────────
+        torch.save({
+            "explore_samples":      self._explore_z_samples,
+            "mode_inits":           mode_inits,
+            "mode_weights":         weights,
+            "detected_mode_values": mode_values,
+            "samples_per_mode":     all_samples,
+            "combined":             combined,
+            "beta":                 beta,
+            "component_for_modes":  self._explore_component,
+        }, f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
+
+        self._combined_z_samples = combined
+        print(f"\nAll results saved to mcmc_run_beta_{beta}.pt")
+
+    
+    # def derive_posterior(self, beta=1, warmup_steps=1000, num_samples=4000):
+    #     """
+    #     Derive the posterior distribution with Hamiltonian Monte Carlo
+    #     """
+
+    #     H_pot = torch.tensor(-self.hessian_MAP, dtype=torch.float64)
+    #     eigenvalues = torch.linalg.eigvalsh(H_pot)
+    #     print("Min eigenvalue:", eigenvalues.min().item())
+    #     print("Max eigenvalue:", eigenvalues.max().item())
+    #     print("Condition number:", (eigenvalues.max() / eigenvalues.min()).item())
+
+    #     # jitter = 1e-5 * torch.eye(H_pot.shape[0], dtype=torch.float64)
+    #     # H_jit = H_pot + jitter
+    #     # L_H = torch.linalg.cholesky(H_jit)  
+    #     for jitter_exp in [1e-5, 1e-4, 1e-3, 1e-2]:
+    #         try:
+    #             jitter = jitter_exp * torch.eye(H_pot.shape[0], dtype=torch.float64)
+    #             L_H = torch.linalg.cholesky(H_pot + jitter)
+    #             print(f"Cholesky succeeded with jitter={jitter_exp}")
+    #             break
+    #         except RuntimeError:
+    #             print(f"Cholesky failed with jitter={jitter_exp}, trying larger...")
+       
+    #     # L for covariance is the inverse of L_H (lower triangular solve)
+    #     L = torch.linalg.solve_triangular(L_H, 
+    #         torch.eye(L_H.shape[0], dtype=torch.float64), upper=False).T
+    #     X_opt_tensor = torch.tensor(self.X_MAP, dtype=torch.float64)
+    #     potential = whitened_potential(
+    #         X_opt_tensor=X_opt_tensor,
+    #         L=L,
+    #         V=self.pca_x.components_,
+    #         gmm=self.gmm_prop,
+    #         beta=beta,
+    #         Tpmp=self.pmp,
+    #         Eb_mean=self.X_mean,
+    #         Eb_std=self.X_std,
+    #         dw=self.thawed_fractional_area,
+    #         df=self.frozen_fractional_area,
+    #         Eb_epsilon=self.X_epsilon
+    #     )
+    #     # nuts_kernel = mcmc.NUTS(
+    #     #     potential_fn=potential,
+    #     #     adapt_step_size=True, 
+    #     #     adapt_mass_matrix=False, 
+    #     #     max_tree_depth=12    
+    #     # )
+    #     # Option A: Identity initialization, let NUTS adapt fully
+    #     nuts_kernel = mcmc.NUTS(
+    #         potential_fn=potential,
+    #         adapt_step_size=True,
+    #         adapt_mass_matrix=True,
+    #         full_mass=False,        # diagonal mass matrix — much cheaper, usually sufficient
+    #         max_tree_depth=12,
+    #         target_accept_prob=0.8
+    #     )
+
+
+    #     # 4. Initialize and Run MCMC
+    #     # Since z_initial = MAP, the corresponding u_initial is exactly a vector of 0s
+    #     initial_params = {"u": torch.zeros_like(X_opt_tensor)}
+
+    #     num_samples = num_samples
+    #     warmup_steps = warmup_steps  # Space is perfectly isotropic now, warmup is incredibly fast
+
+    #     # run HMC
+    #     mcmc_run = mcmc.MCMC(
+    #         nuts_kernel,
+    #         num_samples=num_samples,
+    #         warmup_steps=warmup_steps,
+    #         initial_params=initial_params
+    #     )
+
+    #     print(f"Starting HMC sampling: {num_samples} samples, {warmup_steps} warmup...")
+    #     mcmc_run.run(extra_fields=("potential_energy",))
+
+    #     # save a dictionary containing both mcmc_run and the potential for later analysis
+    #     posterior_dict = {
+    #         "mcmc_run": mcmc_run,
+    #         "potential": potential
+    #     }
+    #     torch.save(posterior_dict, f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
+    #     self.mcmc_md = mcmc_run
+    #     return 
     
     def analyze_posterior_samples(self, beta=1, loading=True):
         """
