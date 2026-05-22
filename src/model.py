@@ -1042,7 +1042,107 @@ class model:
         self._combined_z_samples = combined
         print(f"\nAll results saved to mcmc_run_beta_{beta}.pt")
 
-    
+    def analyze_posterior_samples(self, beta=1, loading=True):
+        """
+        Extract the HMC samples and analyze their properties, including:
+        1. Log probability distribution of the samples to understand the posterior landscape.
+        2. Percentile-based credible intervals (e.g., 5th and 95th percentiles) to quantify uncertainty in the inferred parameters.
+        """
+        # ── Load samples ──────────────────────────────────────────────────────
+        if loading:
+            mcmc_dict = torch.load(f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
+            z_samples = mcmc_dict["combined"]        # ← was "combined_z", correct key is "combined"
+            self._combined_z_samples = z_samples
+        else:
+            z_samples = self._combined_z_samples
+
+
+        z_samples_np = z_samples.cpu().numpy()           # (N, D) numpy
+        num_samples  = z_samples_np.shape[0]
+
+        # ── Compute log probs directly in z-space ─────────────────────────────
+        potential = regular_potential(
+            V=self.pca_x.components_,
+            gmm=self.gmm_prop,
+            beta=beta,
+            Tpmp=self.pmp,
+            Eb_mean=self.X_mean,
+            Eb_std=self.X_std,
+            dw=self.thawed_fractional_area,
+            df=self.frozen_fractional_area,
+            Eb_epsilon=self.X_epsilon
+        )
+
+        log_probs = []
+        with torch.no_grad():
+            for i in range(num_samples):
+                z_i   = z_samples[i].to(torch.float64)
+                neg_lp = potential({"z": z_i})
+                log_probs.append(-neg_lp.item())         # negate: potential returns -log_prob
+
+        log_probs = np.array(log_probs)                  # (N,)
+
+        # ── Sort by log prob ───────────────────────────────────────────────────
+        sorted_indices   = np.argsort(log_probs)         # ascending (lowest first)
+        log_probs_sorted = log_probs[sorted_indices]
+        z_sorted         = z_samples_np[sorted_indices]  # (N, D)
+
+        # ── HPD region: top 90% of samples by log prob ────────────────────────
+        n_keep      = int(0.90 * num_samples)
+        hpd_z       = z_sorted[-n_keep:]                 # (n_keep, D)
+
+        # ── z-space is already PCA latent space → inverse transform to Eb ─────
+        hmc_samples = z_samples_np                       # (N, D), no u→z needed
+        print(f"HMC Sampling Complete. Extracted shape: {hmc_samples.shape}")
+        self.post_samples = hmc_samples
+
+        Eb_samples_norm = np.zeros((num_samples, self.nx * self.ny))
+        for sample in range(num_samples):
+            Eb_samples_norm[sample] = self.pca_x.inverse_transform(hmc_samples[sample].reshape(1, -1))   # (1, n_pixels)
+        Eb_std_flat     = self.X_std.flatten()
+        Eb_mean_flat    = self.X_mean.flatten()
+
+        Eb_samples_ori = np.zeros_like(Eb_samples_norm)
+        for sample in range(num_samples):
+            Eb_samples_ori[sample] = reverse_standardize(
+                Eb_samples_norm[sample],
+                mean=Eb_mean_flat,
+                std=Eb_std_flat,
+                method='relaxation',
+                epsilon=self.X_epsilon
+            )
+            print("Sample: {}/{}".format(sample + 1, num_samples), end='\r')
+
+        # ── Save Eb samples ───────────────────────────────────────────────────
+        np.save(f"../data/posterior-hmc-samples/Eb_samples_ori_beta_{beta}.npy", Eb_samples_ori)
+        np.save(f"../data/posterior-hmc-samples/Eb_samples_norm_beta_{beta}.npy", Eb_samples_norm)
+
+        # ── Convert to temperature ─────────────────────────────────────────────
+        Tb_samples = np.zeros_like(Eb_samples_ori)
+        Tpmp_flat  = self.pmp.flatten()
+
+        for i in range(num_samples):
+            Eb_i   = torch.from_numpy(Eb_samples_ori[i])
+            Tpmp_i = torch.from_numpy(Tpmp_flat) if isinstance(Tpmp_flat, np.ndarray) else Tpmp_flat
+            Tb_samples[i] = enthalpy_to_temperature(Eb_i, Tpmp_i).numpy()
+
+        # ── Statistics ────────────────────────────────────────────────────────
+        self.Tb_std  = np.std(Tb_samples,  axis=0).reshape(self.nx, self.ny)
+        self.Tb_mean = np.mean(Tb_samples, axis=0).reshape(self.nx, self.ny)
+
+        # HPD band: min/max of top-90% samples
+        self.Tb_p5  = Tb_samples[sorted_indices[-n_keep:]].min(axis=0).reshape(self.nx, self.ny)
+        self.Tb_p95 = Tb_samples[sorted_indices[-n_keep:]].max(axis=0).reshape(self.nx, self.ny)
+
+        # ── Mask outside domain ───────────────────────────────────────────────
+        self.Tb_p5  [self.domain_mask == False] = np.nan
+        self.Tb_mean[self.domain_mask == False] = np.nan
+        self.Tb_p95 [self.domain_mask == False] = np.nan
+        self.Tb_std [self.domain_mask == False] = np.nan
+
+        return
+
+
     # def derive_posterior(self, beta=1, warmup_steps=1000, num_samples=4000):
     #     """
     #     Derive the posterior distribution with Hamiltonian Monte Carlo
@@ -1127,126 +1227,126 @@ class model:
     #     self.mcmc_md = mcmc_run
     #     return 
     
-    def analyze_posterior_samples(self, beta=1, loading=True):
-        """
-        Extract the HMC samples and analyze their properties, including:
-        1. Log probability distribution of the samples to understand the posterior landscape.
-        2. Percentile-based credible intervals (e.g., 5th and 95th percentiles) to quantify uncertainty in the inferred parameters.
-        """
-        # ------------------------ Extracting and Analyzing HMC Samples ------------------------
-        # u_samples: shape (N, M) numpy array
-        if loading:
-            mcmc_dict = torch.load(f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
-            mcmc_run = mcmc_dict["mcmc_run"]
-            potential = mcmc_dict["potential"]
-            self.mcmc_md = mcmc_run
+    # def analyze_posterior_samples(self, beta=1, loading=True):
+    #     """
+    #     Extract the HMC samples and analyze their properties, including:
+    #     1. Log probability distribution of the samples to understand the posterior landscape.
+    #     2. Percentile-based credible intervals (e.g., 5th and 95th percentiles) to quantify uncertainty in the inferred parameters.
+    #     """
+    #     # ------------------------ Extracting and Analyzing HMC Samples ------------------------
+    #     # u_samples: shape (N, M) numpy array
+    #     if loading:
+    #         mcmc_dict = torch.load(f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
+    #         mcmc_run = mcmc_dict["mcmc_run"]
+    #         potential = mcmc_dict["potential"]
+    #         self.mcmc_md = mcmc_run
 
-        H_pot = torch.tensor(-self.hessian_MAP, dtype=torch.float64)
-        # stable matrix inversion
-        jitter = 1e-5 * torch.eye(H_pot.shape[0], dtype=torch.float64)
-        cov_matrix = torch.inverse(H_pot + jitter)
+    #     H_pot = torch.tensor(-self.hessian_MAP, dtype=torch.float64)
+    #     # stable matrix inversion
+    #     jitter = 1e-5 * torch.eye(H_pot.shape[0], dtype=torch.float64)
+    #     cov_matrix = torch.inverse(H_pot + jitter)
 
-        # L is the lower triangular Cholesky factor
-        L = torch.linalg.cholesky(cov_matrix)
-        X_opt_tensor = torch.tensor(self.X_MAP, dtype=torch.float64)
-        potential = whitened_potential(
-            X_opt_tensor=X_opt_tensor,
-            L=L,
-            V=self.pca_x.components_,
-            gmm=self.gmm_prop,
-            beta=beta,
-            Tpmp=self.pmp,
-            Eb_mean=self.X_mean,
-            Eb_std=self.X_std,
-            dw=self.thawed_fractional_area,
-            df=self.frozen_fractional_area,
-            Eb_epsilon=self.X_epsilon
-        )
+    #     # L is the lower triangular Cholesky factor
+    #     L = torch.linalg.cholesky(cov_matrix)
+    #     X_opt_tensor = torch.tensor(self.X_MAP, dtype=torch.float64)
+    #     potential = whitened_potential(
+    #         X_opt_tensor=X_opt_tensor,
+    #         L=L,
+    #         V=self.pca_x.components_,
+    #         gmm=self.gmm_prop,
+    #         beta=beta,
+    #         Tpmp=self.pmp,
+    #         Eb_mean=self.X_mean,
+    #         Eb_std=self.X_std,
+    #         dw=self.thawed_fractional_area,
+    #         df=self.frozen_fractional_area,
+    #         Eb_epsilon=self.X_epsilon
+    #     )
 
-        u_samples = self.mcmc_md.get_samples()["u"].cpu().numpy()  # shape (N, M)
-        u_samples = torch.tensor(u_samples, dtype=torch.float64)
-        num_samples = u_samples.shape[0]
-        log_probs = []
+    #     u_samples = self.mcmc_md.get_samples()["u"].cpu().numpy()  # shape (N, M)
+    #     u_samples = torch.tensor(u_samples, dtype=torch.float64)
+    #     num_samples = u_samples.shape[0]
+    #     log_probs = []
 
-        with torch.no_grad():
-            for i in range(num_samples):
-                u_i = u_samples[i]  # shape (M,)
+    #     with torch.no_grad():
+    #         for i in range(num_samples):
+    #             u_i = u_samples[i]  # shape (M,)
                 
-                # potential_fn_whitened returns NEGATIVE log prob → negate it
-                neg_lp = potential({"u": u_i})
-                log_probs.append(neg_lp.item())
+    #             # potential_fn_whitened returns NEGATIVE log prob → negate it
+    #             neg_lp = potential({"u": u_i})
+    #             log_probs.append(neg_lp.item())
 
-        log_probs = np.array(log_probs)  # shape: (N,)
-        # Sort samples by log probability (ascending)
-        sorted_indices = np.argsort(log_probs) 
-        samples_sorted = u_samples[sorted_indices]
-        log_probs_sorted = log_probs[sorted_indices]
+    #     log_probs = np.array(log_probs)  # shape: (N,)
+    #     # Sort samples by log probability (ascending)
+    #     sorted_indices = np.argsort(log_probs) 
+    #     samples_sorted = u_samples[sorted_indices]
+    #     log_probs_sorted = log_probs[sorted_indices]
 
-        # Find the 5th and 95th percentile THRESHOLDS on log prob
-        lp_p5  = np.percentile(log_probs_sorted, 5)
-        lp_p95 = np.percentile(log_probs_sorted, 95)
+    #     # Find the 5th and 95th percentile THRESHOLDS on log prob
+    #     lp_p5  = np.percentile(log_probs_sorted, 5)
+    #     lp_p95 = np.percentile(log_probs_sorted, 95)
 
-        # The actual samples at those boundaries
-        z_samples = (X_opt_tensor + (L @ samples_sorted.T).T).numpy()
+    #     # The actual samples at those boundaries
+    #     z_samples = (X_opt_tensor + (L @ samples_sorted.T).T).numpy()
 
-        idx_p5  = np.argmin(np.abs(log_probs_sorted - lp_p5))
-        idx_p95 = np.argmin(np.abs(log_probs_sorted - lp_p95))
+    #     idx_p5  = np.argmin(np.abs(log_probs_sorted - lp_p5))
+    #     idx_p95 = np.argmin(np.abs(log_probs_sorted - lp_p95))
 
-        z_p5  = z_samples[idx_p5]  
-        z_p95 = z_samples[idx_p95]  
+    #     z_p5  = z_samples[idx_p5]  
+    #     z_p95 = z_samples[idx_p95]  
 
-        n_keep = int(0.90 * num_samples)
-        hpd_samples = z_samples[sorted_indices[-n_keep:]]  # highest density samples
+    #     n_keep = int(0.90 * num_samples)
+    #     hpd_samples = z_samples[sorted_indices[-n_keep:]]  # highest density samples
 
-        # Apply the reverse transformation to the samples: z_samples = MAP + u_samples @ L^T
-        hmc_samples = self.X_MAP + (u_samples.numpy() @ L.numpy().T)
-        print(f"HMC Sampling Complete. Extracted shape: {hmc_samples.shape}")
-        self.post_samples = hmc_samples
+    #     # Apply the reverse transformation to the samples: z_samples = MAP + u_samples @ L^T
+    #     hmc_samples = self.X_MAP + (u_samples.numpy() @ L.numpy().T)
+    #     print(f"HMC Sampling Complete. Extracted shape: {hmc_samples.shape}")
+    #     self.post_samples = hmc_samples
 
-        Eb_samples_norm = self.pca_x.inverse_transform(hmc_samples) 
-        Eb_std_flat     = self.X_std.flatten()
-        Eb_mean_flat    = self.X_mean.flatten()
+    #     Eb_samples_norm = self.pca_x.inverse_transform(hmc_samples) 
+    #     Eb_std_flat     = self.X_std.flatten()
+    #     Eb_mean_flat    = self.X_mean.flatten()
 
-        Eb_samples_ori = np.zeros_like(Eb_samples_norm)
-        for sample in range(num_samples):
-            Eb_samples_ori[sample] = reverse_standardize(Eb_samples_norm[sample], 
-                                                         mean=Eb_mean_flat, 
-                                                         std=Eb_std_flat, 
-                                                         method='relaxation', 
-                                                         epsilon=self.X_epsilon)
+    #     Eb_samples_ori = np.zeros_like(Eb_samples_norm)
+    #     for sample in range(num_samples):
+    #         Eb_samples_ori[sample] = reverse_standardize(Eb_samples_norm[sample], 
+    #                                                      mean=Eb_mean_flat, 
+    #                                                      std=Eb_std_flat, 
+    #                                                      method='relaxation', 
+    #                                                      epsilon=self.X_epsilon)
 
-        # save the Eb_samples_ori for later analysis
-        np.save(f"../data/posterior-hmc-samples/Eb_samples_ori_beta_{beta}.npy", Eb_samples_ori)
-        np.save(f"../data/posterior-hmc-samples/Eb_samples_norm_beta_{beta}.npy", Eb_samples_norm)
+    #     # save the Eb_samples_ori for later analysis
+    #     np.save(f"../data/posterior-hmc-samples/Eb_samples_ori_beta_{beta}.npy", Eb_samples_ori)
+    #     np.save(f"../data/posterior-hmc-samples/Eb_samples_norm_beta_{beta}.npy", Eb_samples_norm)
 
-        Tb_samples = np.zeros_like(Eb_samples_ori)
-        Tpmp_flat  = self.pmp.flatten()
+    #     Tb_samples = np.zeros_like(Eb_samples_ori)
+    #     Tpmp_flat  = self.pmp.flatten()
 
-        for i in range(num_samples):
-            # Depending on whether enthalpy_to_temperature expects torch tensors or numpy arrays
-            Eb_i = torch.from_numpy(Eb_samples_ori[i])
-            Tpmp_i = torch.from_numpy(Tpmp_flat) if isinstance(Tpmp_flat, np.ndarray) else Tpmp_flat
+    #     for i in range(num_samples):
+    #         # Depending on whether enthalpy_to_temperature expects torch tensors or numpy arrays
+    #         Eb_i = torch.from_numpy(Eb_samples_ori[i])
+    #         Tpmp_i = torch.from_numpy(Tpmp_flat) if isinstance(Tpmp_flat, np.ndarray) else Tpmp_flat
             
-            Tb_samples[i] = enthalpy_to_temperature(Eb_i, Tpmp_i).numpy()
+    #         Tb_samples[i] = enthalpy_to_temperature(Eb_i, Tpmp_i).numpy()
 
-        # Calculate Standard Deviation directly across the sample axis
-        self.Tb_std  = np.std(Tb_samples, axis=0).reshape(256, 256)
-        self.Tb_mean = np.mean(Tb_samples, axis=0).reshape(256, 256)
+    #     # Calculate Standard Deviation directly across the sample axis
+    #     self.Tb_std  = np.std(Tb_samples, axis=0).reshape(256, 256)
+    #     self.Tb_mean = np.mean(Tb_samples, axis=0).reshape(256, 256)
 
-        # Summarize the HPD region as a band
-        self.Tb_p5 = Tb_samples[sorted_indices[-n_keep:]].min(axis=0)
-        self.Tb_p95 = Tb_samples[sorted_indices[-n_keep:]].max(axis=0)
-        # self.Tb_p5 = enthalpy_to_temperature(Eb_p5, Tpmp_flat, istorch=False)
-        # self.Tb_p95 = enthalpy_to_temperature(Eb_p95, Tpmp_flat, istorch=False)
+    #     # Summarize the HPD region as a band
+    #     self.Tb_p5 = Tb_samples[sorted_indices[-n_keep:]].min(axis=0)
+    #     self.Tb_p95 = Tb_samples[sorted_indices[-n_keep:]].max(axis=0)
+    #     # self.Tb_p5 = enthalpy_to_temperature(Eb_p5, Tpmp_flat, istorch=False)
+    #     # self.Tb_p95 = enthalpy_to_temperature(Eb_p95, Tpmp_flat, istorch=False)
 
-        self.Tb_p5 = self.Tb_p5.reshape(self.nx, self.ny)
-        self.Tb_mean = self.Tb_mean.reshape(self.nx, self.ny)
-        self.Tb_p95 = self.Tb_p95.reshape(self.nx, self.ny)
-        self.Tb_p5[self.domain_mask == False] = np.nan
-        self.Tb_mean[self.domain_mask == False] = np.nan
-        self.Tb_p95[self.domain_mask == False] = np.nan
+    #     self.Tb_p5 = self.Tb_p5.reshape(self.nx, self.ny)
+    #     self.Tb_mean = self.Tb_mean.reshape(self.nx, self.ny)
+    #     self.Tb_p95 = self.Tb_p95.reshape(self.nx, self.ny)
+    #     self.Tb_p5[self.domain_mask == False] = np.nan
+    #     self.Tb_mean[self.domain_mask == False] = np.nan
+    #     self.Tb_p95[self.domain_mask == False] = np.nan
 
-        return 
+    #     return 
     
     def posterior_quality_check(self, slicing=1000):
         """ 
@@ -1299,6 +1399,8 @@ class model:
         plt.tight_layout()
         plt.show()
         return 
+
+
     def plot_gmm_samples_pca(self, n_samples=3):
         """   
         Visualize GMM predictions from random test samples. Default to 3 samples. 
