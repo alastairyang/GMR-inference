@@ -2,7 +2,7 @@ from src.amortization import propagate_uncertainty
 from src.utilities import standardize, reverse_standardize
 from src.optimization import log_posterior_gradient, log_posterior, log_posterior_hessian
 from src.ice import enthalpy_to_temperature
-from src.hamiltonianMC import whitened_potential, regular_potential
+from src.hamiltonianMC import regular_potential
 
 from gmr.utils import check_random_state
 from gmr import GMM
@@ -841,7 +841,7 @@ class model:
             plt.show()
         return
     
-    def explore_posterior(self, beta=1, 
+    def explore_posterior(self, beta=1, beta_w=0.02,
                           warmup_steps=2000, 
                           explore_samples=500,
                           component_for_modes=0):
@@ -853,12 +853,12 @@ class model:
         import matplotlib.pyplot as plt
         from scipy.stats import gaussian_kde
         from scipy.signal import find_peaks
-
         # ── Build potential ───────────────────────────────────────────────────
         potential = regular_potential(
             V=self.pca_x.components_,
             gmm=self.gmm_prop,
             beta=beta,
+            beta_w=beta_w,
             Tpmp=self.pmp,
             Eb_mean=self.X_mean,
             Eb_std=self.X_std,
@@ -1048,7 +1048,7 @@ class model:
         self._combined_z_samples = combined
         print(f"\nAll results saved to mcmc_run_beta_{beta}.pt")
 
-    def analyze_posterior_samples(self, beta=1, loading=True):
+    def analyze_posterior_samples(self, beta=1, beta_w=0.02, loading=True):
         """
         Extract the HMC samples and analyze their properties, including:
         1. Log probability distribution of the samples to understand the posterior landscape.
@@ -1071,6 +1071,7 @@ class model:
             V=self.pca_x.components_,
             gmm=self.gmm_prop,
             beta=beta,
+            beta_w=beta_w,
             Tpmp=self.pmp,
             Eb_mean=self.X_mean,
             Eb_std=self.X_std,
