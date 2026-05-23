@@ -2,7 +2,7 @@ from tabnanny import verbose
 import numpy as np
 from gmr import MVN
 from src.amortization import to_log_probability_density
-from src.ice import enthalpy_to_temperature
+from src.ice import enthalpy_to_temperature, enthalpy_to_water_fraction
 from src.utilities import reverse_standardize, shape_check
 # import pytorch for AD
 import torch
@@ -58,6 +58,20 @@ def loglikelihood_frozen(beta, Tb, Tpmp, df, eps = 0.01):
     shape_check(Tb, Tpmp, df)
     return torch.sum(torch.log(1 + (eps-1)*torch.exp(-(1/beta)*(Tpmp-Tb))) * df) 
 
+def loglikelihood_wf(beta_w, Eb, Tpmp, eps = 0.01, wf_threshold=0.02):
+    """ 
+    Compute the log likelihood of water fraction. This is a hard constraint, where 
+    if a water fraction exceeds a threshold we assign low likelihood. 
+
+    L3 = \Sum_i^N log(1/ (1 + exp(1/beta * (wf - wf_threshold))) + eps)  
+
+    Parameters:
+    -------
+    beta_w: scalar
+        fraction scale for the water fraction likelihood term
+    """
+    wf = enthalpy_to_water_fraction(Eb, Tpmp)
+    return torch.sum(torch.log(1 / (1 + torch.exp((1/beta_w) * (wf - wf_threshold))) + eps))
 def log_prior(Eb, gmm):
     """   
     Compute the log prior probability of the basal enthalpy field under the GMM model.
@@ -131,12 +145,13 @@ def log_prior_gradient(Eb, gmm):
     
     return grad
 
-def loglikelihoods_sum(beta, Tb, Tpmp, dw, df, eps=0.01):
+def loglikelihoods_sum(beta, beta_w, Tb, Eb, Tpmp, dw, df, eps=0.01):
     L1 = loglikelihood_thawed(beta, Tb, Tpmp, dw)
     L2 = loglikelihood_frozen(beta, Tb, Tpmp, df, eps)
-    return L1 + L2
+    L3 = loglikelihood_wf(beta_w, Eb, Tpmp, eps)
+    return L1 + L2 + L3
 
-def log_posterior(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon, verbose = False):
+def log_posterior(Eb_star, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon, verbose = False):
     """   
     Compute the log posterior probability 
     
@@ -156,6 +171,8 @@ def log_posterior(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsil
         trained GMM model representing the prior distribution over basal enthalpy fields
     beta: scalar
         temperature scale (K) for the exponential parameterization
+    beta_w: scalar
+        fraction scale for the water fraction likelihood term
     Tpmp: array
         pressure melting point at each pixel (n_features,)
     Eb_mean: array
@@ -195,6 +212,7 @@ def log_posterior(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsil
 
     L1 = loglikelihood_thawed(beta, Tb, Tpmp, dw)
     L2 = loglikelihood_frozen(beta, Tb, Tpmp, df)
+    L3 = loglikelihood_wf(beta_w, Eb_ori, Tpmp)
 
     # Eb_star back to numpy for log_prior computation
     Eb_star_np = Eb_star.detach().numpy()
@@ -203,11 +221,12 @@ def log_posterior(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsil
     if verbose:
         print(f"Log Likelihood Thawed: {L1.item():.3f}")
         print(f"Log Likelihood Frozen: {L2.item():.3f}")
+        print(f"Log Likelihood Water Fraction: {L3.item():.3f}")
         print(f"Log Prior: {log_prior_val.item():.3f}")
 
-    return L1 + L2 + log_prior_val
+    return L1 + L2 + L3 + log_prior_val
 
-def log_posterior_gradient(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon):
+def log_posterior_gradient(Eb_star, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon):
     """   
     Compute the gradient of the log posterior prob wrt Eb.
     
@@ -233,7 +252,8 @@ def log_posterior_gradient(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df,
         fractional area of frozen base at each pixel (n_features,)
     beta: scalar
         temperature scale (K) for the exponential parameterization
-    
+    beta_w: scalar
+        fraction scale for the water fraction likelihood term
     """
     if isinstance(V, np.ndarray):
         V = torch.from_numpy(V)
@@ -256,7 +276,7 @@ def log_posterior_gradient(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df,
     Tb = enthalpy_to_temperature(Eb_ori, Tpmp)
 
     # forward compute of the likelihood terms
-    llsum = loglikelihoods_sum(beta, Tb, Tpmp, dw, df)
+    llsum = loglikelihoods_sum(beta, beta_w, Tb, Eb_ori, Tpmp, dw, df)
 
     # Compute gradients using AD
     llsum.backward()
@@ -326,7 +346,7 @@ def log_prior_hessian(Eb, gmm):
 
     return weighted_hess
 
-def log_posterior_hessian(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon):
+def log_posterior_hessian(Eb_star, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon):
     """
     Hybrid Hessian of log posterior:
       - Likelihood terms: autograd (torch)
@@ -348,7 +368,7 @@ def log_posterior_hessian(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, 
         Eb     = V.T @ x
         Eb_ori = reverse_standardize(Eb, Eb_mean, Eb_std, method='relaxation', epsilon=Eb_epsilon)
         Tb     = enthalpy_to_temperature(Eb_ori, Tpmp)
-        return loglikelihoods_sum(beta, Tb, Tpmp, dw, df)
+        return loglikelihoods_sum(beta, beta_w, Tb, Eb_ori, Tpmp, dw, df)
 
     likelihood_hessian = torch.autograd.functional.hessian(
         likelihood_fn, Eb_star_tensor
@@ -361,7 +381,7 @@ def log_posterior_hessian(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, 
     return likelihood_hessian + prior_hessian
 
 
-def finite_difference_check(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon, epsilon=1e-5):
+def finite_difference_check(Eb_star, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon, epsilon=1e-5):
     """  
     Perform finite difference check for the log posterior gradient.
 
@@ -385,6 +405,10 @@ def finite_difference_check(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df
         fractional area of frozen base at each pixel (n_features,)
     beta: scalar
         temperature scale (K) for the exponential parameterization
+    beta_w: scalar
+        fraction scale for the water fraction likelihood term
+    Eb_epsilon: scalar
+        small value added to std for relaxation method in reverse standardization
     epsilon: scalar
         small perturbation for finite difference
 
@@ -402,8 +426,8 @@ def finite_difference_check(Eb_star, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df
         Eb_star_plus[i] += epsilon
         Eb_star_minus[i] -= epsilon
         
-        log_post_plus = log_posterior(Eb_star_plus, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon)
-        log_post_minus = log_posterior(Eb_star_minus, V, gmm, beta, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon)
+        log_post_plus = log_posterior(Eb_star_plus, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon)
+        log_post_minus = log_posterior(Eb_star_minus, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon)
         
         finite_diff_grad[i] = (log_post_plus - log_post_minus) / (2 * epsilon)
     

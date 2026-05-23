@@ -24,7 +24,21 @@ def enthalpy_to_temperature(Eb, Tpmp, Cp=2093.0, T0=223.15, istorch=True):
         Tb = np.where(Eb > Cp*(Tpmp-T0), Tpmp, (Eb + Cp*T0)/Cp)
     return Tb
 
-import numpy as np
+def enthalpy_to_water_fraction(Eb, Tpmp, Cp=2093.0, T0=223.15, istorch=True):
+    """  
+    Compute water fraction from enthalpy
+
+    w = 0 if Eb <= Cp*(Tpmp-T0)
+    w = (Eb - Cp*(Tpmp-T0))/(L + Cp*(Tpmp-T0)) if Eb > Cp*(Tpmp-T0)
+
+    """
+    L = 334000.0  # J/kg
+    if istorch:
+        w = torch.where(Eb <= Cp*(Tpmp-T0), 0.0, (Eb - Cp*(Tpmp-T0))/L)
+    else: # numpy
+        w = np.where(Eb <= Cp*(Tpmp-T0), 0.0, (Eb - Cp*(Tpmp-T0))/L)
+    return w
+
 
 def defineActivationEnergies(T):
     """

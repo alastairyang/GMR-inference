@@ -693,12 +693,10 @@ class model:
             plt.show()
         return z_optimal, residual_latent, residual_recon, residual
     
-    def compute_MAP(self, beta=1, n_iter=20, lr=0.5, show_plot=True, show_trajectory=False):
+    def compute_MAP(self, beta=1, beta_w=1, n_iter=20, lr=0.5, show_plot=True, show_trajectory=False):
         """ 
         Compute the Maximum A Posteriori
         """
-        # find good initial value for optimization
-        # --> here we use mean 
 
         n_samples = 300
         X_samples = self.gmm_prop.sample(n_samples)
@@ -730,6 +728,7 @@ class model:
                                    self.pca_x.components_, 
                                    self.gmm_prop,
                                    beta,
+                                   beta_w,
                                    Tpmp, 
                                    Eb_mean_data, 
                                    Eb_std_data,
@@ -742,6 +741,7 @@ class model:
                                            self.pca_x.components_, 
                                            self.gmm_prop, 
                                            beta, 
+                                           beta_w,
                                            Tpmp, 
                                            Eb_mean_data, 
                                            Eb_std_data, 
@@ -764,6 +764,7 @@ class model:
                                               self.pca_x.components_, 
                                               self.gmm_prop,
                                               beta, 
+                                              beta_w,
                                               Tpmp, 
                                               Eb_mean_data, 
                                               Eb_std_data,
@@ -781,7 +782,7 @@ class model:
                 optimized_X = X.detach().requires_grad_(True)   # fresh leaf, grad-enabled
                 hessian = log_posterior_hessian(
                     optimized_X, self.pca_x.components_, self.gmm_prop,
-                    beta, Tpmp, Eb_mean_data, Eb_std_data,
+                    beta, beta_w, Tpmp, Eb_mean_data, Eb_std_data,
                     dw, df,
                     Eb_epsilon=self.X_epsilon
 
@@ -801,6 +802,7 @@ class model:
         Tb_MAP[self.domain_mask == False] = np.nan
 
         # add
+        self.Eb_MAP = Eb_MAP_ori.numpy()
         self.Tb_MAP = Tb_MAP
         self.hessian_MAP = hessian
         self.X_MAP = X_optimized
@@ -839,8 +841,10 @@ class model:
             plt.show()
         return
     
-    def explore_posterior(self, beta=1, warmup_steps=2000, explore_samples=500,
-                        component_for_modes=0):
+    def explore_posterior(self, beta=1, 
+                          warmup_steps=2000, 
+                          explore_samples=500,
+                          component_for_modes=0):
         """
         Stage 1: Short exploratory NUTS run in z-space to discover the number
         and locations of posterior modes. Results are stored on self for use
@@ -886,6 +890,8 @@ class model:
             initial_params={"z": X_opt_tensor}
         )
         mcmc_explore.run()
+
+        self.mcmc_explore = mcmc_explore  # store for diagnostics if needed
 
         z_explore = mcmc_explore.get_samples()["z"].cpu()  # (explore_samples, D)
         print(f"Exploratory samples collected: {z_explore.shape}")
