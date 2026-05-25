@@ -31,6 +31,7 @@ class model:
     def __init__(self, extent=None, coord=None):
         self.extent = extent
         self.coord = coord
+        self.X_grid, self.Y_grid = np.meshgrid(coord[0], coord[1])
 
         # in our naming convention, '_ori' means standardized but not reduced (original dimension)
         # 'reduced' means the dimension has been reduced by PCA.
@@ -1296,13 +1297,14 @@ class model:
         frozen_consistent_frac = np.zeros(num_samples,)
         Tpmp_flat  = self.pmp.flatten()
 
+        threshold = 1 # error margin
         for i in range(num_samples):
             Eb_i   = torch.from_numpy(Eb_samples_ori[i])
             Tpmp_i = torch.from_numpy(Tpmp_flat) if isinstance(Tpmp_flat, np.ndarray) else Tpmp_flat
             Tb_samples[i] = enthalpy_to_temperature(Eb_i, Tpmp_i).numpy()
             # predict evidence from Tb
-            thawed = (Tb_samples[i] - self.pmp) >= -beta # we use the same beta threshold for error margin
-            frozen = (self.pmp - Tb_samples[i]) >= beta 
+            thawed = (Tb_samples[i] - self.pmp) >= -threshold # we use the same beta threshold for error margin
+            frozen = (self.pmp - Tb_samples[i]) >= threshold 
             # out of domain masking
             thawed[self.domain_mask.flatten() == False] = np.nan
             frozen[self.domain_mask.flatten() == False] = np.nan
@@ -1321,10 +1323,10 @@ class model:
 
         bestsample_consistency  = np.full(self.ndim_ori, np.nan)
         worstsample_consistency = np.full(self.ndim_ori, np.nan)
-        thawed_best  = (Tb_samples[best_idx] - self.pmp) >= -beta
-        frozen_best  = (self.pmp - Tb_samples[best_idx]) >= beta
-        thawed_worst = (Tb_samples[worst_idx] - self.pmp) >= -beta
-        frozen_worst = (self.pmp - Tb_samples[worst_idx]) >= beta
+        thawed_best  = (Tb_samples[best_idx] - self.pmp) >= -threshold
+        frozen_best  = (self.pmp - Tb_samples[best_idx]) >= threshold
+        thawed_worst = (Tb_samples[worst_idx] - self.pmp) >= -threshold
+        frozen_worst = (self.pmp - Tb_samples[worst_idx]) >= threshold
         thawed_best  = np.where((self.domain_mask.flatten() == True) & (self.thawed_mask == True),
                                 thawed_best, np.nan)
         thawed_worst = np.where((self.domain_mask.flatten() == True) & (self.thawed_mask == True), 
@@ -1333,55 +1335,73 @@ class model:
                                 frozen_best, np.nan)
         frozen_worst = np.where((self.domain_mask.flatten() == True) & (self.frozen_mask == True), 
                                 frozen_worst, np.nan)
+        # Best sample
+        thawed_best_mask = ~np.isnan(thawed_best)
+        frozen_best_mask = ~np.isnan(frozen_best)
+        thawed_worst_mask = ~np.isnan(thawed_worst)
+        frozen_worst_mask = ~np.isnan(frozen_worst)
 
-        bestsample_consistency = np.where((thawed_best == True) | (frozen_best == True), 
-                                          1, np.nan)
-        bestsample_consistency = np.where((thawed_best == False) | (frozen_best == False), 
-                                          0, bestsample_consistency)
-        worstsample_consistency = np.where((thawed_worst == True) | (frozen_worst == True), 
-                                           1, np.nan)
-        worstsample_consistency = np.where((thawed_worst == False) | (frozen_worst == False), 
-                                           0, worstsample_consistency)
+        best_thawed_x      = self.X_grid.flatten()[thawed_best_mask] / 1e3
+        best_thawed_y      = np.flipud(self.Y_grid).flatten()[thawed_best_mask] / 1e3
+        best_thawed_values = np.where(thawed_best[thawed_best_mask] == 1, 1, 0)
 
-        fig, axes = plt.subplots(1, 3, figsize=(20, 8),
-                                gridspec_kw={'width_ratios': [1, 2, 2]})
+        best_frozen_x      = self.X_grid.flatten()[frozen_best_mask] / 1e3
+        best_frozen_y      = np.flipud(self.Y_grid).flatten()[frozen_best_mask] / 1e3
+        best_frozen_values = np.where(frozen_best[frozen_best_mask] == 1, 1, 0)
 
-        axes[0].hist(frozen_consistent_frac, bins=20, alpha=0.5, label='Frozen Consistent Fraction')
-        axes[0].hist(thawed_consistent_frac, bins=20, alpha=0.5, label='Thawed Consistent Fraction')
-        axes[0].set_xlim(0.5, 1)
-        axes[0].set_xlabel('Consistent Fraction')
-        axes[0].set_ylabel('Frequency')
-        axes[0].legend()
-        axes[0].set_title('Posterior Predictive Check: Consistent Fraction across Samples')
+        worst_thawed_x      = self.X_grid.flatten()[thawed_worst_mask] / 1e3
+        worst_thawed_y      = np.flipud(self.Y_grid).flatten()[thawed_worst_mask] / 1e3
+        worst_thawed_values = np.where(thawed_worst[thawed_worst_mask] == 1, 1, 0)
+
+        worst_frozen_x      = self.X_grid.flatten()[frozen_worst_mask] / 1e3
+        worst_frozen_y      = np.flipud(self.Y_grid).flatten()[frozen_worst_mask] / 1e3
+        worst_frozen_values = np.where(frozen_worst[frozen_worst_mask] == 1, 1, 0)
+
+        # --- Figure 2: 2x2 consistency maps ---
+        fig, axes = plt.subplots(2, 2, figsize=(16, 14))
+        plt.subplots_adjust(right=0.85)   # room for two colorbars
 
         best_deg2pmp  = self.pmp.reshape(self.nx, self.ny) - Tb_samples[best_idx].reshape(self.nx, self.ny)
         best_deg2pmp  = np.where(self.domain_mask == True, best_deg2pmp, np.nan)
         worst_deg2pmp = self.pmp.reshape(self.nx, self.ny) - Tb_samples[worst_idx].reshape(self.nx, self.ny)
         worst_deg2pmp = np.where(self.domain_mask == True, worst_deg2pmp, np.nan)
-        im0 = axes[1].imshow(best_deg2pmp,
-                            extent=self.extent, origin='lower', 
-                            cmap='hot', vmin=0, vmax=5,
-                            alpha = 0.3)
-        axes[1].set_xlabel('X (km)', fontsize=15)
-        axes[1].set_ylabel('Y (km)', fontsize=15)
-        im1 = axes[1].imshow(bestsample_consistency.reshape(self.nx, self.ny),
-                            extent=self.extent, origin='lower', cmap='coolwarm_r', vmin=0, vmax=1)
-        plt.colorbar(im1, ax=axes[1])
-        axes[1].set_title('Best Sample Consistency')
 
-        im0 = axes[2].imshow(worst_deg2pmp,
-                            extent=self.extent, origin='lower', 
-                            cmap='hot', vmin=0, vmax=5,
-                            alpha = 0.3)
-        axes[2].set_xlabel('X (km)', fontsize=15)
-        axes[2].set_ylabel('Y (km)', fontsize=15)
-        im2 = axes[2].imshow(worstsample_consistency.reshape(self.nx, self.ny),
-                            extent=self.extent, origin='lower', cmap='coolwarm_r', vmin=0, vmax=1)
-        plt.colorbar(im2, ax=axes[2])
-        axes[2].set_title('Worst Sample Consistency')
+        scatter_kw = dict(cmap='coolwarm_r', vmin=0, vmax=1, s=20, facecolors='none', alpha=0.3)
+        imshow_kw  = dict(extent=self.extent, origin='lower', cmap='hot', vmin=0, vmax=5, alpha=0.3)
 
-        plt.tight_layout()
+        panels = [
+            (axes[0, 0], best_deg2pmp,  best_thawed_x,  best_thawed_y,  best_thawed_values,  'o', 'Best — Thawed Consistency'),
+            (axes[0, 1], best_deg2pmp,  best_frozen_x,  best_frozen_y,  best_frozen_values,  'P', 'Best — Frozen Consistency'),
+            (axes[1, 0], worst_deg2pmp, worst_thawed_x, worst_thawed_y, worst_thawed_values, 'o', 'Worst — Thawed Consistency'),
+            (axes[1, 1], worst_deg2pmp, worst_frozen_x, worst_frozen_y, worst_frozen_values, 'P', 'Worst — Frozen Consistency'),
+        ]
+
+        last_im = None
+        last_sc = None
+        for ax, deg2pmp, sx, sy, sval, marker, title in panels:
+            last_im = ax.imshow(deg2pmp, **imshow_kw)
+            last_sc = ax.scatter(sx, sy, c=sval, marker=marker, **scatter_kw)
+            ax.plot(self.domain_bound_line[0], self.domain_bound_line[1], 'k-', lw=2)
+            ax.set_xlabel('X (km)', fontsize=13)
+            ax.set_ylabel('Y (km)', fontsize=13)
+            ax.set_title(title, fontsize=13)
+
+        # Colorbar for imshow (hot) — upper right
+        cax_im = fig.add_axes([0.87, 0.52, 0.02, 0.38])
+        cb_im  = fig.colorbar(last_im, cax=cax_im)
+        cb_im.set_label('Degrees to PMP (°C)', fontsize=12)
+
+        # Colorbar for scatter (coolwarm_r) — lower right
+        cax_sc = fig.add_axes([0.87, 0.10, 0.02, 0.38])
+        cb_sc  = fig.colorbar(last_sc, cax=cax_sc)
+        cb_sc.solids.set_alpha(1.0)
+        cb_sc.set_ticks([0, 1])
+        cb_sc.set_ticklabels(['Inconsistent', 'Consistent'])
+        cb_sc.set_label('Consistency', fontsize=12)
+
         plt.show()
+
+
 
         return thawed_consistent_frac, frozen_consistent_frac, bestsample_consistency, worstsample_consistency
         
