@@ -1398,7 +1398,7 @@ class model:
         cb_sc.set_ticks([0, 1])
         cb_sc.set_ticklabels(['Inconsistent', 'Consistent'])
         cb_sc.set_label('Consistency', fontsize=12)
-
+        plt.savefig("../figs/posterior_predictive_check_consistency_maps.png", dpi=300)
         plt.show()
 
 
