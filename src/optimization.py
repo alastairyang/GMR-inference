@@ -69,6 +69,10 @@ def loglikelihood_wf(beta_w, Eb, Tpmp, eps = 0.01, wf_threshold=0.02):
     -------
     beta_w: scalar
         fraction scale for the water fraction likelihood term
+    eps: scalar
+        small value to avoid numerical issues in the likelihood computation
+    wf_threshold: scalar
+        water fraction threshold above which we assign low likelihood (e.g., 0.02 for 2% water fraction)
     """
     wf = enthalpy_to_water_fraction(Eb, Tpmp)
     return torch.sum(torch.log(1 / (1 + torch.exp((1/beta_w) * (wf - wf_threshold))) + eps))
