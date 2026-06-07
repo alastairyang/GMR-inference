@@ -12,7 +12,7 @@ from scipy.interpolate import RegularGridInterpolator
 
 class Plotting:
     def __init__(self):
-        self.epsg = 3031 # antarctic polar stereographic
+        self.epsg     = 3031 # antarctic polar stereographic
         self.proj     = ccrs.SouthPolarStereo()
         self.data_crs = ccrs.epsg(self.epsg)
         pass
@@ -59,7 +59,10 @@ class Plotting:
             background data (e.g., hillshade) to be plotted in all subplots
             
         both data and background are composed of dict with keys 
-            'x', 'y', 'data', 'vmin','vmax', 'contour_data','contour_levels','title'
+            'x', 'y', 'data', 
+            'vmin','vmax', 
+            'contour_data','contour_levels','contour_colors',
+            'title','cb_label'
             if one of the option is not needed, it should be None
 
 
@@ -70,9 +73,13 @@ class Plotting:
 
 
         fig, axes = plt.subplots(1, n_panels,
-            figsize=(16, 6),                          # ← wider to fit three panels
+            figsize=(5 * n_panels, 6),                      
             subplot_kw={'projection': self.proj}
         )
+
+        # if one figure, make axes iterable
+        if n_panels == 1:
+            axes = [axes]
 
         for ax, d in zip(axes, data):
             # first ensure input data are defined on the same coordinate system. 
@@ -84,7 +91,7 @@ class Plotting:
                 origin='lower',
                 extent=[self.x_min, self.x_max, self.y_min, self.y_max],
                 transform=self.data_crs,
-                cmap='hot',                          
+                cmap=d.get('cmap', 'viridis'),                         
                 alpha=1, zorder=1,
                 vmin=d.get('vmin'), vmax=d.get('vmax')
             )
@@ -92,18 +99,20 @@ class Plotting:
             ax.set_aspect('equal')
             # add colorbar
             fig.colorbar(im0, ax=ax, fraction=0.046, pad=0.04,
-                        label='unitless')
+                        label=d.get('cb_label', ''))
             # add dT contour
             if d.get('contour_data') is not None:
                 x, y = np.meshgrid(d['x'], d['y'])
                 cs1 = ax.contour(
                     x, y, d['contour_data'],
                     levels=d.get('contour_levels'),
-                    colors='white',
+                    colors=d.get('contour_colors', 'white'),
                     linewidths=1,
                     transform=self.data_crs,
                     zorder=2
                 )
+        # tight layout
+        plt.tight_layout()
         
         return 
     def _setup_ax(self, ax, background):
@@ -131,7 +140,7 @@ class Plotting:
             origin='upper',
             extent=[self.x_min, self.x_max, self.y_min, self.y_max],
             transform=self.data_crs,
-            cmap='gist_earth', alpha=0.6, zorder=0
+            cmap=background.get('cmap', 'gist_earth'), alpha=0.6, zorder=0
         )
 
         return gl
