@@ -1,5 +1,8 @@
 import numpy as np
-
+import os
+import xarray as xr
+import scipy.io as sio
+from scipy.interpolate import RegularGridInterpolator
 def shape_check(*arrays):
     """  
     Check that all input arrays have the same shape.
@@ -254,3 +257,189 @@ def read_exp(filepath):
     # strip NaN rows (segment separators)
     valid = ~(np.isnan(xs) | np.isnan(ys))
     return xs[valid], ys[valid]
+
+
+def load_ase_datasets(verbose=True):
+    """
+    Load and regrid all standard ASE datasets onto the ASE coordinate grid
+    (defined by the basal temperature posterior_mean_Tb.tif).
+
+    Datasets prepared
+    -----------------
+    Geometry   : ice thickness (H), bed topography (bed), surface topography (sdem)
+    Thermal    : pressure-melting point (Tpmp), basal temperature (Tb)
+    Kinematics : surface velocity magnitude + components (vel, vx, vy)
+    Slope      : surface slope magnitude + components (slope_mag, slope_x, slope_y)
+
+    Returns
+    -------
+    dict with keys:
+        coords  : dict(X, Y, xs, ys)          – 2-D meshgrid + 1-D axes
+        H       : ice thickness                (m)
+        bed     : bed topography               (m)
+        sdem    : surface topography           (m)
+        Tb      : basal temperature            (K)
+        Tpmp    : pressure-melting point       (K)
+        dTpmp   : Tpmp - Tb                    (K)  positive = below melting
+        vel     : velocity magnitude           (m/yr)
+        vx      : x-component of velocity     (m/yr)
+        vy      : y-component of velocity     (m/yr)
+        slope_mag : surface slope magnitude   (m/m)
+        slope_x   : slope in x-direction      (m/m)
+        slope_y   : slope in y-direction      (m/m)
+    """
+
+    # ─────────────────────────────────────────────────────────────────
+    # 0.  Paths  (edit here if anything moves)
+    # ─────────────────────────────────────────────────────────────────
+    BASE   = '/home/donglaiyang/Documents/Georgia-Tech/Research'
+
+    PATHS = dict(
+        bedmap  = os.path.join(BASE, 'common-data-set/bed-topography/bedmap3AIS.nc'),
+        vel_mag = os.path.join(BASE, 'common-data-set/velocity/antarctica_ice_velocity_450m_v2.nc'),
+        H_mat   = os.path.join(BASE,
+                    'thermal-model/Amundsen-thermal-output-Yang/'
+                    'thermal-training-data/Thwaites-PIG/training/gridded/'
+                    'H_gridded.mat'),
+        coord   = os.path.join(BASE,
+                    'thermal-model/Amundsen-thermal-output-Yang/'
+                    'thermal-training-data/Thwaites-PIG/training/gridded/'
+                    'trainingAll_image_coord.mat'),
+        domain_mask = os.path.join(BASE,
+                    'thermal-model/Amundsen-thermal-output-Yang/thermal-training-data/Thwaites-PIG/training/gridded/',
+                    'training_mask_domain_continuous.mat')
+
+    )
+
+    # ─────────────────────────────────────────────────────────────────
+    # 1.  Helper utilities
+    # ─────────────────────────────────────────────────────────────────
+    def _world_grid(src):
+        """1-D axes + 2-D meshgrid from an open rasterio dataset."""
+        cols = np.arange(src.width)
+        rows = np.arange(src.height)
+        xs = np.array([src.xy(0, c)[0] for c in cols])
+        ys = np.array([src.xy(r, 0)[1] for r in rows])
+        X, Y = np.meshgrid(xs, ys)
+        return X, Y, xs, ys
+
+    def _make_interp(ys_src, xs_src, data):
+        """
+        Build a RegularGridInterpolator, flipping axes to ascending order
+        if the source grid is descending (standard rasterio convention).
+        """
+        if ys_src[0] > ys_src[-1]:
+            return RegularGridInterpolator(
+                (ys_src[::-1], xs_src), data[::-1, :],
+                method='linear', bounds_error=False, fill_value=np.nan)
+        return RegularGridInterpolator(
+            (ys_src, xs_src), data,
+            method='linear', bounds_error=False, fill_value=np.nan)
+
+    def _regrid(ys_src, xs_src, data, Y_tgt, X_tgt):
+        """Interpolate data onto target (Y_tgt, X_tgt) meshgrid."""
+        fn  = _make_interp(ys_src, xs_src, data)
+        pts = np.column_stack([Y_tgt.ravel(), X_tgt.ravel()])
+        return fn(pts).reshape(X_tgt.shape)
+
+    def _log(msg):
+        if verbose:
+            print(f'  [load_ase_datasets] {msg}')
+
+    # ─────────────────────────────────────────────────────────────────
+    # 2.  reference coordinates
+    # ─────────────────────────────────────────────────────────────────
+    _log('Loading reference coordinates …')
+    coord_data = sio.loadmat(PATHS['coord'])
+    xs = coord_data['training_coord']['xs'][0][0].flatten()
+    ys = coord_data['training_coord']['ys'][0][0].flatten()
+    X, Y = np.meshgrid(xs, ys)
+
+    out = dict(coords=dict(X=X, Y=Y, xs=xs, ys=ys))
+
+    # ─────────────────────────────────────────────────────────────────
+    # 3.  Bedmap3  →  H, bed, sdem  (crop + regrid)
+    # ─────────────────────────────────────────────────────────────────
+    _log('Loading Bedmap3 …')
+    buffer = 50_000   # 50 km padding around ASE domain
+
+    x_min, x_max = xs.min(), xs.max()
+    y_min, y_max = ys.min(), ys.max()
+
+    bm = xr.open_dataset(PATHS['bedmap'])
+    bm_x = bm['x'].values
+    bm_y = bm['y'].values
+
+    mx = (bm_x >= x_min - buffer) & (bm_x <= x_max + buffer)
+    my = (bm_y >= y_min - buffer) & (bm_y <= y_max + buffer)
+
+    x_crop = bm_x[mx]
+    y_crop = bm_y[my]
+
+    def _bm_crop_regrid(var_name):
+        arr = bm[var_name].values[np.ix_(my, mx)].astype(np.float64)
+        return _regrid(y_crop, x_crop, arr, Y, X)
+
+    out['sdem'] = _bm_crop_regrid('surface_topography')
+    out['bed']  = _bm_crop_regrid('bed_topography')
+    out['H']    = _bm_crop_regrid('ice_thickness')
+    bm.close()
+
+    # ─────────────────────────────────────────────────────────────────
+    # 4.  Pressure-melting point
+    # ─────────────────────────────────────────────────────────────────
+    _log('Computing Tpmp …')
+    BETA = 9.8e-8   # K Pa⁻¹  Clausius–Clapeyron
+    RHO  = 917.0    # kg m⁻³  ice density
+    G    = 9.81     # m s⁻²
+
+    out['Tpmp']  = 273.15 - BETA * RHO * G * out['H']
+
+    # ─────────────────────────────────────────────────────────────────
+    # 5.  Surface slope  (from sdem on the ASE grid)
+    # ─────────────────────────────────────────────────────────────────
+    _log('Computing surface slope …')
+    # np.gradient respects non-uniform spacing when axes are supplied
+    slope_y, slope_x = np.gradient(out['sdem'], ys, xs)
+    out['slope_x']   = slope_x
+    out['slope_y']   = slope_y
+    out['slope_mag'] = np.sqrt(slope_x**2 + slope_y**2)
+
+    # ─────────────────────────────────────────────────────────────────
+    # 6.  Ice velocity  (MEaSUREs / ITSLIVE NetCDF)
+    # ─────────────────────────────────────────────────────────────────
+    _log('Loading velocity …')
+    vel_ds  = xr.open_dataset(PATHS['vel_mag'])
+
+    # ── normalise variable names across products ──────────────────
+    # MEaSUREs Phase Map uses 'VX'/'VY'; ITSLIVE uses 'vx'/'vy'
+    vx_key = 'VX' if 'VX' in vel_ds else 'vx'
+    vy_key = 'VY' if 'VY' in vel_ds else 'vy'
+    x_key  = 'x'  if 'x'  in vel_ds.coords else 'X'
+    y_key  = 'y'  if 'y'  in vel_ds.coords else 'Y'
+
+    vel_x_raw = vel_ds[x_key].values
+    vel_y_raw = vel_ds[y_key].values
+
+    mvx = (vel_x_raw >= x_min - buffer) & (vel_x_raw <= x_max + buffer)
+    mvy = (vel_y_raw >= y_min - buffer) & (vel_y_raw <= y_max + buffer)
+
+    vx_crop = vel_ds[vx_key].values[np.ix_(mvy, mvx)].astype(np.float64)
+    vy_crop = vel_ds[vy_key].values[np.ix_(mvy, mvx)].astype(np.float64)
+
+    out['vx']  = _regrid(vel_y_raw[mvy], vel_x_raw[mvx], vx_crop, Y, X)
+    out['vy']  = _regrid(vel_y_raw[mvy], vel_x_raw[mvx], vy_crop, Y, X)
+    out['vel'] = np.sqrt(out['vx']**2 + out['vy']**2)
+    vel_ds.close()
+
+    # ─────────────────────────────────────────────────────────────────
+    # 7.  domain mask
+    # ─────────────────────────────────────────────────────────────────
+    _log('Loading domain mask …')
+    mask_data = sio.loadmat(PATHS['domain_mask'])
+    mask = mask_data['in_domain_mask']
+    out['mask'] = mask
+    # no need to interpolate; domain mask was saved with coord
+
+    _log('All datasets ready.')
+    return out
