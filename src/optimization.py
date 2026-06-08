@@ -76,6 +76,7 @@ def loglikelihood_wf(beta_w, Eb, Tpmp, eps = 0.01, wf_threshold=0.02):
     """
     wf = enthalpy_to_water_fraction(Eb, Tpmp)
     return torch.sum(torch.log(1 / (1 + torch.exp((1/beta_w) * (wf - wf_threshold))) + eps))
+
 def log_prior(Eb, gmm):
     """   
     Compute the log prior probability of the basal enthalpy field under the GMM model.

@@ -29,8 +29,8 @@ GHF_standardized = GHF_data['GHF_standardized']
 # replace nan by 0
 
 # -------------------
-train_ratio = 0.8
-validation_ratio = 0.1
+train_ratio = 0.9
+validation_ratio = 0
 test_ratio = 0.1
 assert train_ratio + validation_ratio + test_ratio == 1.0, "The sum of the ratios must be 1."
 

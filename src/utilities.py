@@ -258,10 +258,65 @@ def read_exp(filepath):
     valid = ~(np.isnan(xs) | np.isnan(ys))
     return xs[valid], ys[valid]
 
+import numpy as np
+from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
+
+
+def cluster_points(x_coords, y_coords, n, random_state=42, show_plot=False):
+    """
+    Clusters 2D points into n groups based on spatial proximity.
+
+    Args:
+        x_coords   : list or array of x coordinates
+        y_coords   : list or array of y coordinates
+        n          : number of clusters (groups)
+        random_state: seed for reproducibility
+
+    Returns:
+        labels     : array of cluster IDs (0 to n-1) for each point
+        centroids  : array of shape (n, 2) — the center of each cluster
+        groups     : dict mapping cluster_id -> list of (x, y) points
+    """
+    # Stack into (num_points, 2) array
+    points = np.column_stack((x_coords, y_coords))
+
+    # Fit K-Means
+    kmeans = KMeans(n_clusters=n, random_state=random_state, n_init="auto")
+    kmeans.fit(points)
+
+    labels    = kmeans.labels_          # cluster ID per point
+    centroids = kmeans.cluster_centers_ # (n, 2) centroid positions
+
+    # Build a readable dict: {cluster_id: [(x1,y1), (x2,y2), ...]}
+    groups = {i: [] for i in range(n)}
+    for point, label in zip(points, labels):
+        groups[label].append(tuple(point))
+
+    if show_plot:
+        def plot_clusters(x_coords, y_coords, labels, centroids):
+            plt.figure(figsize=(8, 6))
+            scatter = plt.scatter(x_coords, y_coords, c=labels, cmap="tab10", s=60, zorder=2)
+            plt.scatter(centroids[:, 0], centroids[:, 1],
+                        c="black", marker="X", s=200, label="Centroids", zorder=3)
+            plt.colorbar(scatter, label="Cluster ID")
+            plt.legend()
+            plt.title("Point Clusters")
+            plt.xlabel("X")
+            plt.ylabel("Y")
+            plt.tight_layout()
+            plt.show()
+        
+        plot_clusters(x_coords, y_coords, labels, centroids)
+
+
+    return labels, centroids, groups
+
+
 
 def load_ase_datasets(verbose=True):
     """
-    Load and regrid all standard ASE datasets onto the ASE coordinate grid
+    Load and regrid all standard Amundsen Sea Embayment (ASE) datasets onto the ASE coordinate grid
     (defined by the basal temperature posterior_mean_Tb.tif).
 
     Datasets prepared

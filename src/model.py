@@ -230,8 +230,12 @@ class model:
         # Then transform each split separately
         X_reduced_train      = self.pca_x.transform(flatten(X_train))
         Y_reduced_train      = self.pca_y.transform(flatten(Y_train))
-        X_reduced_validation = self.pca_x.transform(flatten(X_validation))
-        Y_reduced_validation = self.pca_y.transform(flatten(Y_validation))
+        if Y_validation.shape[3] > 0: # if validation set is not empty
+            X_reduced_validation = self.pca_x.transform(flatten(X_validation))
+            Y_reduced_validation = self.pca_y.transform(flatten(Y_validation))
+        else:
+            X_reduced_validation = np.empty((0, self.pca_x.n_components_))
+            Y_reduced_validation = np.empty((0, self.pca_y.n_components_))
         X_reduced_test       = self.pca_x.transform(flatten(X_test))
         Y_reduced_test       = self.pca_y.transform(flatten(Y_test))
 
@@ -299,7 +303,7 @@ class model:
         if show_plot:
             plt.figure(figsize=(20, 6))
             plt.subplot(1, 3, 1)
-            plt.imshow(Y_obs_standardized.reshape(self.nx, self.ny), cmap='bwr', vmin=-5, vmax=5)
+            plt.imshow(Y_obs_standardized.reshape(self.nx, self.ny), cmap='bwr', vmin=-2, vmax=2)
             plt.title('Standardized Observed Ns')
             plt.colorbar()
             plt.gca().invert_yaxis()
@@ -747,8 +751,7 @@ class model:
         Eb_mean_data = torch.from_numpy(self.X_mean)
         Eb_std_data = torch.from_numpy(self.X_std)
 
-        # start the optimization using L-BFGS
-        n_iter = 20
+        # start the optimization using L-BFGS in PyTorch
         X = init_Eb_reduced.clone().requires_grad_(True)
         optimizer = optim.LBFGS([X], lr=lr, max_iter=n_iter)
 
@@ -1159,7 +1162,7 @@ class model:
         # ── Save Eb samples ───────────────────────────────────────────────────
         np.save(f"../data/posterior-hmc-samples/Eb_samples_ori_beta_{beta}.npy", Eb_samples_ori)
         np.save(f"../data/posterior-hmc-samples/Eb_samples_norm_beta_{beta}.npy", Eb_samples_norm)
-
+        print(f"\nEb samples saved to ../data/posterior-hmc-samples/ with beta={beta}")
         # ── Convert to temperature ─────────────────────────────────────────────
         Tb_samples = np.zeros_like(Eb_samples_ori)
         Tpmp_flat  = self.pmp.flatten()
