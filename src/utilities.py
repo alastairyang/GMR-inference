@@ -3,6 +3,10 @@ import os
 import xarray as xr
 import scipy.io as sio
 from scipy.interpolate import RegularGridInterpolator
+from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
+
+
 def shape_check(*arrays):
     """  
     Check that all input arrays have the same shape.
@@ -258,10 +262,6 @@ def read_exp(filepath):
     valid = ~(np.isnan(xs) | np.isnan(ys))
     return xs[valid], ys[valid]
 
-import numpy as np
-from sklearn.cluster import KMeans
-import matplotlib.pyplot as plt
-
 
 def cluster_points(x_coords, y_coords, n, random_state=42, show_plot=False):
     """
@@ -312,6 +312,31 @@ def cluster_points(x_coords, y_coords, n, random_state=42, show_plot=False):
 
     return labels, centroids, groups
 
+
+def build_masks_from_points(point_list, idx_thawed, idx_frozen,
+                             flat_x, flat_y, grid_shape):
+    """
+    Given a list of (x, y) tuples (from cluster_groups),
+    return thawed_mask and frozen_mask of shape grid_shape.
+
+    Strategy: match each (x,y) back to its flat grid index,
+    then check whether that index lives in idx_thawed or idx_frozen.
+    """
+    # Build a lookup: (x, y) -> flat grid index for thawed and frozen points
+    thawed_lookup = {(flat_x[i], flat_y[i]): i for i in idx_thawed}
+    frozen_lookup = {(flat_x[i], flat_y[i]): i for i in idx_frozen}
+
+    thawed_mask_flat = np.zeros(len(flat_x), dtype=bool)
+    frozen_mask_flat = np.zeros(len(flat_x), dtype=bool)
+
+    for (px, py) in point_list:
+        if (px, py) in thawed_lookup:
+            thawed_mask_flat[thawed_lookup[(px, py)]] = True
+        elif (px, py) in frozen_lookup:
+            frozen_mask_flat[frozen_lookup[(px, py)]] = True
+
+    return (thawed_mask_flat.reshape(grid_shape),
+            frozen_mask_flat.reshape(grid_shape))
 
 
 def load_ase_datasets(verbose=True):
