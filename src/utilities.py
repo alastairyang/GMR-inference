@@ -23,6 +23,7 @@ def shape_check(*arrays):
     shapes = [arr.shape for arr in arrays]
     if len(set(shapes)) > 1:
         raise ValueError("All input arrays must have the same shape, but got shapes: {}".format(shapes))
+    
 def shape_check(X, mean, std):
     """
     Checks that mean and std are compatible with X for broadcasting.

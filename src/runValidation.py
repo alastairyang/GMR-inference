@@ -5,19 +5,26 @@ import skdim
 import os
 # load .mat data
 import scipy.io
-from scipy.linalg import pinvh
-
-import xarray as xr
 # add ../ to the path
 import sys
 sys.path.append('../')
 
 import src.model as model
+from src.ice import compute_pmp
 
-
-# -------------------- KEY VALIDATION PARAMETER --------------------
-beta_posterior = 1
 # ------------------------------------------------------------------
+# -------------------- KEY VALIDATION PARAMETER --------------------
+beta_posterior = os.getenv('BETA_POSTERIOR')
+kfolder_num    = os.getenv('KFOLDER_NUM')
+# ------------------------------------------------------------------
+# ------------------------------------------------------------------
+
+n_optimal     = 20 # number of Gaussian components in GMM for P(Eb, Ns)
+beta_prior    = 0.00001 # beta for the prior model. Small -> favors the observational data
+n_component_x = 50 # number of PCA components for Eb
+n_component_y = 15 # number of PCA components for Ns
+lambda1       = 1  # prior covariance weight 1
+lambda2       = 5  # prior covariance weight 2; probably the learned variance? need to verify
 
 data_path       = os.getenv('DATA_PATH')
 param_path      = os.getenv('PARAM_PATH')
@@ -56,14 +63,26 @@ coord_data       = scipy.io.loadmat(folder + coord_filename)
 # standardization data for Eb
 Eb_mean          = scipy.io.loadmat(folder + Eb_mean_filename)
 Eb_std           = scipy.io.loadmat(folder + Eb_std_filename)
+# standardization factors
+Eb_mean_data     = scipy.io.loadmat(folder + Eb_mean_filename)
+Eb_std_data      = scipy.io.loadmat(folder + Eb_std_filename)
+# replace nan by 0 for downstream tasks
+Eb_mean_data     = np.nan_to_num(Eb_mean_data['Eb_mean'], nan=0.0)
+Eb_std_data      = np.nan_to_num(Eb_std_data['Eb_std'], nan=0.0)
+
+# compute pmp
+H = H_data['H_struct']['H'][0][0].flatten()
+X = H_data['H_struct']['X'][0][0].flatten()
+Y = H_data['H_struct']['Y'][0][0].flatten()
+pmp = compute_pmp(H)
 
 # load
-Eb_standardized_train = np.load(split_data_path + XY_train_filename)['X_train']
-Ns_standardized_train = np.load(split_data_path + XY_train_filename)['Y_train']
-Eb_standardized_valid = np.load(split_data_path + XY_valid_filename)['X_validation']
-Ns_standardized_valid = np.load(split_data_path + XY_valid_filename)['Y_validation']
-Eb_standardized_test  = np.load(split_data_path + XY_test_filename)['X_test']
-Ns_standardized_test  = np.load(split_data_path + XY_test_filename)['Y_test']
+Eb_standardized_train = np.load(split_data_path + XY_train_filename)['Eb_train']
+Ns_standardized_train = np.load(split_data_path + XY_train_filename)['Ns_train']
+Eb_standardized_valid = np.load(split_data_path + XY_valid_filename)['Eb_validation']
+Ns_standardized_valid = np.load(split_data_path + XY_valid_filename)['Ns_validation']
+Eb_standardized_test  = np.load(split_data_path + XY_test_filename)['Eb_test']
+Ns_standardized_test  = np.load(split_data_path + XY_test_filename)['Ns_test']
 # replace nan by 0
 Eb_mean = np.nan_to_num(Eb_mean['Eb_mean'], nan=0.0).flatten()
 Eb_std  = np.nan_to_num(Eb_std['Eb_std'], nan=0.0).flatten()
@@ -126,26 +145,19 @@ md.load_standardization_data(X_mean=Eb_mean, X_std=Eb_std,
                              X_epsilon=Eb_standardize_epsilon, Y_epsilon=Ns_standardize_epsilon)
 
 # reduce dim with PCA. 
-md.find_reduction_model(n_component_x=25, n_component_y=8)
+md.find_reduction_model_pca(n_component_x=n_component_x, n_component_y=n_component_y)
 
 # load specifically the train, validation, and test (pre-split) data and apply the fitted PCA
-md.load_split_data(X_train=Eb_standardized_train, Y_train=Ns_standardized_train,
+md.load_split_data(X_train=Eb_standardized_train,      Y_train=Ns_standardized_train,
                    X_validation=Eb_standardized_valid, Y_validation=Ns_standardized_valid,
-                   X_test=Eb_standardized_test, Y_test=Ns_standardized_test)
+                   X_test=Eb_standardized_test,        Y_test=Ns_standardized_test)
 
 # train GMM
-# the following parameters are determined by BIC and l-curve analysi
-# see the main.ipynb
-n_optimal = 4 
-beta_prior = 1
-
 md.train_gmm_XY(n_components=n_optimal)
 md.load_obs_data(atten_rate_avg)
-lambda1, lambda2 = 1,1
 md.derive_prior(beta=beta_prior, lambda1=lambda1, lambda2=lambda2)
 
-from src.ice import compute_pmp
-
+# --------------- load basal thermal evidence -----------------
 # load the thawed base and frozen base data
 frozen_base_filename = folder + "../../basal-frozen-mask/frozen_mask.mat"
 thawed_base_filename = folder + "../../basal-water-mask/water_mask.mat"
@@ -154,21 +166,9 @@ thawed_mask = scipy.io.loadmat(thawed_base_filename)['water_mask']
 frozen_mask_data = frozen_mask['data'][0][0]
 thawed_mask_data = thawed_mask['data'][0][0]
 
-Eb_mean_data = scipy.io.loadmat(folder + Eb_mean_filename)
-Eb_std_data = scipy.io.loadmat(folder + Eb_std_filename)
-# replace nan by 0
-Eb_mean_data = np.nan_to_num(Eb_mean_data['Eb_mean'], nan=0.0)
-Eb_std_data = np.nan_to_num(Eb_std_data['Eb_std'], nan=0.0)
-
-# compute pmp
-H = H_data['H_struct']['H'][0][0].flatten()
-X = H_data['H_struct']['X'][0][0].flatten()
-Y = H_data['H_struct']['Y'][0][0].flatten()
-pmp = compute_pmp(H)
-
 # into a vector
-Eb_mean_data = Eb_mean_data.flatten()
-Eb_std_data = Eb_std_data.flatten()
+Eb_mean_data     = Eb_mean_data.flatten()
+Eb_std_data      = Eb_std_data.flatten()
 frozen_mask_data = frozen_mask_data.flatten()
 thawed_mask_data = thawed_mask_data.flatten()
 
@@ -184,7 +184,6 @@ md.load_evidence(thawed_mask_data, thawed_fractional_area,
                  pmp,
                  show_plot=False)
 
-md.compute_MAP(beta=beta_posterior, n_iter=20, lr=0.5)
 
 # need to create a save plot version and silence the plotting
 md.plot_evidence_consistency(md.Tb_MAP.flatten(), beta=beta_posterior)
