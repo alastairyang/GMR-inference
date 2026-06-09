@@ -6,6 +6,7 @@ requires-python = ">=3.9"
 dependencies = [
     "cartopy>=0.23.0",
     "gmr>=2.0.3",
+    "ipykernel>=6.31.0",
     "matplotlib>=3.9.4",
     "numpy>=2.0.2",
     "pandas>=2.3.3",
