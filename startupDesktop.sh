@@ -7,4 +7,4 @@ export INFERENCE_READY_DATA_PATH="/data-archive/ASE-inference/train-validate-tes
 # run the data setup script
 # it checks the consistency of data paths and split the training, validation, and test sets
 # to ensure reproducibility 
-python runDataSetup.py
+uv run python runDataSetup.py
