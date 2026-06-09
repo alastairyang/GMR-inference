@@ -315,5 +315,5 @@ md.compute_MAP(beta=beta_posterior, beta_w=beta_w, n_iter=10, lr=0.1, show_plot=
 print("\n Start posterior sampling with beta =", beta_posterior)
 md.explore_posterior(beta=beta_posterior, beta_w=beta_w, component_for_modes=0)
 md.derive_posterior(warmup_steps=1000, num_samples=3000, savename=mcmc_md_name)
-# md.analyze_posterior_samples(beta=beta_posterior, loading=True)
+md.analyze_posterior_samples(beta=beta_posterior, loading=True, savename=mcmc_md_name)
 
