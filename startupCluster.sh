@@ -1,5 +1,8 @@
 #!/bin/bash
 
+module purge
+module load uv
+
 export DATA_PATH="/storage/project/r-wchu38-0/dyang379/ASE-inference/training/gridded/"
 export PARAM_PATH="/storage/home/hcoda1/6/dyang379/projects/GMR-inference/post-processing-parameters.csv"
 
