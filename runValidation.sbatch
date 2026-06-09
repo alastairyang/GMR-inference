@@ -16,6 +16,11 @@ module purge
 module load uv
 cd $SLURM_SUBMIT_DIR
 
+PARAMS_FILE="data/tuning-combination-full.csv"
+LINE=$(sed -n "${SLURM_ARRAY_TASK_ID}p" $PARAMS_FILE)
+export KFOLD_NUM=$(echo $LINE | cut -d',' -f1)
+export BETA_POSTERIOR=$(echo $LINE | cut -d',' -f2)
+
 # set project specific environmental variables
 export DATA_PATH="/storage/project/r-wchu38-0/dyang379/ASE-inference/training/gridded/"
 export PARAM_PATH="/storage/home/hcoda1/6/dyang379/projects/GMR-inference/post-processing-parameters.csv"
@@ -31,4 +36,5 @@ echo "User ID:   $USER"
 echo "Node:      $SLURMD_NODENAME"
 echo "---------------------------------------"
 
-python runJob.py
+cd $SLURM_SUBMIT_DIR
+uv run python src/runValidation.py
