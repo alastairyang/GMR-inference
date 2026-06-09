@@ -17,8 +17,8 @@ module load uv
 cd $SLURM_SUBMIT_DIR
 
 # set project specific environmental variables
-export PROJECT_DATA=/storage/home/hcoda1/6/dyang379/projects/ice-stochastic-filter/
-export PROJECT_RESULTS=$STORAGE_BASE/stochastic-fingerprint/results/
+export DATA_PATH="/storage/project/r-wchu38-0/dyang379/ASE-inference/training/gridded/"
+export PARAM_PATH="/storage/home/hcoda1/6/dyang379/projects/GMR-inference/post-processing-parameters.csv"
 export PROJECT_SCRATCH=/storage/home/hcoda1/6/dyang379/scratch/
 export ARRAY_ID=$SLURM_ARRAY_TASK_ID
 
@@ -30,6 +30,5 @@ echo "Array ID:  $SLURM_ARRAY_TASK_ID"
 echo "User ID:   $USER"
 echo "Node:      $SLURMD_NODENAME"
 echo "---------------------------------------"
-
 
 python runJob.py
