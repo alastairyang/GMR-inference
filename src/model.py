@@ -1,3 +1,5 @@
+import os
+
 from src.amortization import propagate_uncertainty
 from src.utilities import standardize, reverse_standardize
 from src.optimization import log_posterior_gradient, log_posterior, log_posterior_hessian
@@ -524,7 +526,7 @@ class model:
             weight for Y variance from simulation in the covariance estimation
         """
         # find mean and covariance
-        z_optimal, residual_latent, residual_recon, residual = self.compute_optimal_Y_in_latent(beta=beta)
+        z_optimal, residual_latent, residual_recon, residual = self.compute_optimal_Y_in_latent(beta=beta,show_plot=show_plot)
 
         residual_latent = residual_latent.reshape(-1, 1)  # shape (ndim_reduced_y, 1)
         residual_latent_outer = residual_latent @ residual_latent.T  # shape (ndim_reduced_y, ndim_reduced_y)
@@ -998,12 +1000,14 @@ class model:
             f"Call derive_posterior() to run full sampling.")
 
 
-    def derive_posterior(self, warmup_steps=2000, num_samples=2000):
+    def derive_posterior(self, warmup_steps=2000, num_samples=2000, savename=None):
         """
         Stage 2: Full NUTS chains initialized at each mode discovered by
         explore_posterior(). All parameters are fetched from self.
         Must call explore_posterior() first.
         """
+        import os
+        
         # ── Guard ─────────────────────────────────────────────────────────────
         if not hasattr(self, '_explore_mode_inits'):
             raise RuntimeError(
@@ -1073,6 +1077,12 @@ class model:
         print(f"\nTotal combined samples: {combined.shape[0]}")
 
         # ── Save everything ───────────────────────────────────────────────────
+        save_folder = "../data/posterior-hmc-models"
+        if savename is None:
+            savename = f"{save_folder}/mcmc_run_beta_{beta}.pt"
+        else:
+            savename = f"{save_folder}/{savename}"
+        os.makedirs(save_folder, exist_ok=True)
         torch.save({
             "explore_samples":      self._explore_z_samples,
             "mode_inits":           mode_inits,
@@ -1082,20 +1092,27 @@ class model:
             "combined":             combined,
             "beta":                 beta,
             "component_for_modes":  self._explore_component,
-        }, f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
+        }, savename)
 
         self._combined_z_samples = combined
-        print(f"\nAll results saved to mcmc_run_beta_{beta}.pt")
+        print(f"\nPosterior samples saved to {savename}")
 
-    def analyze_posterior_samples(self, beta=1, beta_w=0.02, loading=True):
+    def analyze_posterior_samples(self, beta=1, beta_w=0.02, loading=True, savename=None):
         """
         Extract the HMC samples and analyze their properties, including:
         1. Log probability distribution of the samples to understand the posterior landscape.
         2. Percentile-based credible intervals (e.g., 5th and 95th percentiles) to quantify uncertainty in the inferred parameters.
         """
         # ── Load samples ──────────────────────────────────────────────────────
+        save_folder = "../data/posterior-hmc-models"
+
         if loading:
-            mcmc_dict = torch.load(f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
+            if savename is None:
+                mcmc_dict = torch.load(f"{save_folder}/mcmc_run_beta_{beta}.pt")
+                print(f"Loaded samples from {save_folder}/mcmc_run_beta_{beta}.pt")
+            else:
+                mcmc_dict = torch.load(f"{save_folder}/{savename}")
+                print(f"Loaded samples from {save_folder}/{savename}")
             z_samples = mcmc_dict["combined"]        # ← was "combined_z", correct key is "combined"
             self._combined_z_samples = z_samples
         else:
@@ -1160,9 +1177,14 @@ class model:
             print("Sample: {}/{}".format(sample + 1, num_samples), end='\r')
 
         # ── Save Eb samples ───────────────────────────────────────────────────
-        np.save(f"../data/posterior-hmc-samples/Eb_samples_ori_beta_{beta}.npy", Eb_samples_ori)
-        np.save(f"../data/posterior-hmc-samples/Eb_samples_norm_beta_{beta}.npy", Eb_samples_norm)
-        print(f"\nEb samples saved to ../data/posterior-hmc-samples/ with beta={beta}")
+        if savename is None:
+            np.save(f"../data/posterior-hmc-samples/Eb_samples_ori_beta_{beta}.npy", Eb_samples_ori)
+            np.save(f"../data/posterior-hmc-samples/Eb_samples_norm_beta_{beta}.npy", Eb_samples_norm)
+            print(f"\nEb samples saved to ../data/posterior-hmc-samples/ with beta={beta}")
+        else:
+            np.save(f"../data/posterior-hmc-samples/{savename}_Eb_samples_ori.npy", Eb_samples_ori)
+            np.save(f"../data/posterior-hmc-samples/{savename}_Eb_samples_norm.npy", Eb_samples_norm)
+            print(f"\nEb samples saved to ../data/posterior-hmc-samples/ with savename={savename}")
         # ── Convert to temperature ─────────────────────────────────────────────
         Tb_samples = np.zeros_like(Eb_samples_ori)
         Tpmp_flat  = self.pmp.flatten()
