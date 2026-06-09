@@ -1,7 +1,7 @@
 #!/bin/bash
 
-export DATA_PATH="/home/donglaiyang/Documents/Georgia-Tech/Research/thermal-model/Amundsen-thermal-output-Yang/thermal-training-data/Thwaites-PIG/training/gridded/"
-export PARAM_PATH="/home/donglaiyang/Documents/Georgia-Tech/Research/thermal-model/data/post-processing-parameters.csv"
+export DATA_PATH="/storage/project/r-wchu38-0/dyang379/ASE-inference/training/gridded/"
+export PARAM_PATH="/storage/home/hcoda1/6/dyang379/projects/GMR-inference/post-processing-parameters.csv"
 
 # run the data setup script
 # it checks the consistency of data paths and split the training, validation, and test sets
