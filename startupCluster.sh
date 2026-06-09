@@ -15,8 +15,13 @@
 module purge
 module load uv
 
-export DATA_PATH="/storage/project/r-wchu38-0/dyang379/ASE-inference/training/gridded/"
+# UV venv lives in the scratch space to avoid filling up the home dir
+export UV_CACHE_DIR=/storage/scratch1/6/dyang379/.cache/uv
+export UV_PROJECT_ENVIRONMENT=/storage/scratch1/6/dyang379/GMR-inference-venv
+
+export RAW_DATA_PATH="/storage/project/r-wchu38-0/dyang379/ASE-inference/training/gridded/"
 export PARAM_PATH="/storage/home/hcoda1/6/dyang379/projects/GMR-inference/post-processing-parameters.csv"
+export INFERENCE_READY_DATA_PATH="/data-archive/ASE-inference/train-validate-test/train-validate-test/"
 
 # run the data setup script
 # it checks the consistency of data paths and split the training, validation, and test sets

@@ -31,12 +31,14 @@ lambda2       = 5  # prior covariance weight 2; probably the learned variance? n
 
 err_prior_eps = 1 # error margin in prior predictive check
 
-data_path       = os.getenv('DATA_PATH')
-param_path      = os.getenv('PARAM_PATH')
+raw_data_path       = os.getenv('RAW_DATA_PATH')
+param_path          = os.getenv('PARAM_PATH')
+output_path         = os.getenv('INFERENCE_READY_DATA_PATH')
 mcmc_md_name    = f"mcmc_run_beta_{beta_posterior}_kfold_{kfold_num}.pt"
-split_data_path = "../data/train-validate-test/" # split data set
 fig_save_path    = "../figs/parameter-tuning/"
-folder = data_path
+
+split_data_path = output_path
+folder          = raw_data_path
 # ------------------------------------------------- LOAD SIMULATION DATA -------------------------------------------------
 # get the DATA_PATH from the environment variable
 XY_train_filename    = "train_data.npz"

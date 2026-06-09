@@ -14,9 +14,12 @@ validation_ratio = 0
 test_ratio       = 0.1
 n_folds          = 10
 
-data_path  = os.getenv('DATA_PATH')
-param_path = os.getenv('PARAM_PATH')
-folder = data_path
+raw_data_path  = os.getenv('RAW_DATA_PATH')
+param_path     = os.getenv('PARAM_PATH')
+output_path    = os.getenv('INFERENCE_READY_DATA_PATH')
+
+save_folder = output_path
+folder      = raw_data_path
 # ------------------------------------------------- LOAD SIMULATION DATA -------------------------------------------------
 # get the DATA_PATH from the environment variable
 Eb_filename           = 'trainingAll4D_Eb_sim_standardized.mat'
@@ -70,7 +73,6 @@ print("Shape of GHF_train:", GHF_train.shape)
 print("Shape of GHF_validation:", GHF_validation.shape)
 print("Shape of GHF_test:", GHF_test.shape)
 
-save_folder = "data/train-validate-test/"
 os.makedirs(save_folder, exist_ok=True)
 np.savez(save_folder + "train_data.npz", Eb_train=Eb_train, Ns_train=Ns_train, GHF_train=GHF_train)
 np.savez(save_folder + "validation_data.npz", Eb_validation=Eb_validation, Ns_validation=Ns_validation, GHF_validation=GHF_validation)
