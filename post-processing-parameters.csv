@@ -1,0 +1,2 @@
+n_atten_rate_downsampled,heat_capacity,degree_threshold,dist_to_bound_threshold,atten_uq_sample_n,image_dim,Eb_standardization_epsilon,Ns_standardization_epsilon,xmin,xmax,ymin,ymax,GHF_standardization_epsilon
+100000,2093,0.8,20000,50,256,1287.4819202075,0.262291780650704,-1850000,-1000000,-848000,78100,0.0181090261526068
