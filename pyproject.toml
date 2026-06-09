@@ -1,0 +1,18 @@
+[project]
+name = "gmr-inference"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.9"
+dependencies = [
+    "cartopy>=0.23.0",
+    "gmr>=2.0.3",
+    "matplotlib>=3.9.4",
+    "numpy>=2.0.2",
+    "pandas>=2.3.3",
+    "pyro-ppl>=1.9.1",
+    "rasterio>=1.4.3",
+    "scikit-learn>=1.6.1",
+    "scipy>=1.13.1",
+    "torch>=2.8.0",
+    "xarray>=2024.7.0",
+]
