@@ -1005,6 +1005,15 @@ class model:
         Stage 2: Full NUTS chains initialized at each mode discovered by
         explore_posterior(). All parameters are fetched from self.
         Must call explore_posterior() first.
+
+        parameters
+        ----------
+        warmup_steps: int
+            Number of warmup steps for each NUTS chain.
+        num_samples: int
+            Number of samples to collect per mode before combining.
+        savename: str or None
+            If provided, it is a string to the path of the file (i.e. path + filename)
         """
         import os
         
@@ -1077,12 +1086,9 @@ class model:
         print(f"\nTotal combined samples: {combined.shape[0]}")
 
         # ── Save everything ───────────────────────────────────────────────────
-        save_folder = "../data/posterior-hmc-models"
         if savename is None:
-            savename = f"{save_folder}/mcmc_run_beta_{beta}.pt"
-        else:
-            savename = f"{save_folder}/{savename}"
-        os.makedirs(save_folder, exist_ok=True)
+            savename = f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt"
+
         torch.save({
             "explore_samples":      self._explore_z_samples,
             "mode_inits":           mode_inits,
@@ -1104,15 +1110,14 @@ class model:
         2. Percentile-based credible intervals (e.g., 5th and 95th percentiles) to quantify uncertainty in the inferred parameters.
         """
         # ── Load samples ──────────────────────────────────────────────────────
-        save_folder = "../data/posterior-hmc-models"
 
         if loading:
             if savename is None:
-                mcmc_dict = torch.load(f"{save_folder}/mcmc_run_beta_{beta}.pt")
-                print(f"Loaded samples from {save_folder}/mcmc_run_beta_{beta}.pt")
+                mcmc_dict = torch.load(f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
+                print(f"Loaded samples from ../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
             else:
-                mcmc_dict = torch.load(f"{save_folder}/{savename}")
-                print(f"Loaded samples from {save_folder}/{savename}")
+                mcmc_dict = torch.load(savename)
+                print(f"Loaded samples from {savename}")
             z_samples = mcmc_dict["combined"]        # ← was "combined_z", correct key is "combined"
             self._combined_z_samples = z_samples
         else:

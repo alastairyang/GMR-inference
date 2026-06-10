@@ -16,7 +16,7 @@ module purge
 module load uv
 cd $SLURM_SUBMIT_DIR
 
-PARAMS_FILE="data/tuning-combination-full.csv"
+PARAMS_FILE="tuning-combination-full.csv"
 LINE=$(sed -n "${SLURM_ARRAY_TASK_ID}p" $PARAMS_FILE)
 export KFOLD_NUM=$(echo $LINE | cut -d',' -f1)
 export BETA_POSTERIOR=$(echo $LINE | cut -d',' -f2)

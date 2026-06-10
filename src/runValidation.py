@@ -6,7 +6,10 @@ import os
 import scipy.io
 # add ../ to the path
 import sys
-sys.path.append('../')
+from pathlib import Path
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.append(str(PROJECT_ROOT))
+print("Project root:", PROJECT_ROOT)
 
 import src.model as model
 from src.ice import compute_pmp
@@ -34,8 +37,11 @@ err_prior_eps = 1 # error margin in prior predictive check
 raw_data_path       = os.getenv('RAW_DATA_PATH')
 param_path          = os.getenv('PARAM_PATH')
 output_path         = os.getenv('INFERENCE_READY_DATA_PATH')
-mcmc_md_name    = f"mcmc_run_beta_{beta_posterior}_kfold_{kfold_num}.pt"
-fig_save_path    = "../figs/parameter-tuning/"
+fig_save_path    = str(PROJECT_ROOT) + "/figs/parameter-tuning/"
+
+# filename for the MCMC posterior model
+mcmc_md_name    = str(PROJECT_ROOT) + f"/data/posterior-hmc-models/mcmc_run_beta_{beta_posterior}_kfold_{kfold_num}.pt"
+
 
 split_data_path = output_path
 folder          = raw_data_path
@@ -311,7 +317,7 @@ md.load_evidence(new_thawed_mask.flatten(), new_thawed_fractional_area.flatten()
                  show_plot=False)
 
 print("\n Start computing MAP (initial point for posterior sampling)")
-md.compute_MAP(beta=beta_posterior, beta_w=beta_w, n_iter=10, lr=0.1, show_plot=True)
+md.compute_MAP(beta=beta_posterior, beta_w=beta_w, n_iter=10, lr=0.1, show_plot=False)
 
 # Posterior
 print("\n Start posterior sampling with beta =", beta_posterior)
