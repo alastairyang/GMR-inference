@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=20        # n cores to fork workers into
 #SBATCH --mem=4G                
 #SBATCH --time=08:00:00           
-#SBATCH --array=1-50%30              # Limit simultaneous jobs to avoid overwhelming cluster
+#SBATCH --array=1-10              # Limit simultaneous jobs to avoid overwhelming cluster
 #SBATCH --output=/storage/project/r-wchu38-0/dyang379/logs/kfoldcv_%A_%a.out
 #SBATCH --error=/storage/project/r-wchu38-0/dyang379/logs/kfoldcv_%A_%a.err
 
