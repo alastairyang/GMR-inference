@@ -326,4 +326,4 @@ print("\n Start posterior sampling with beta =", beta_posterior)
 md.explore_posterior(beta=beta_posterior, beta_w=beta_w, component_for_modes=0)
 md.derive_posterior(warmup_steps=1000, num_samples=3000, savename=mcmc_md_name)
 md.analyze_posterior_samples(beta=beta_posterior, loading=True, savename=mcmc_samples_name)
-
+print("Posterior sampling completed!")
