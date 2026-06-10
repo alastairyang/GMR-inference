@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=20        # n cores to fork workers into
 #SBATCH --mem=4G                
 #SBATCH --time=08:00:00           
-#SBATCH --array=1-10              # Limit simultaneous jobs to avoid overwhelming cluster
+#SBATCH --array=1-3              # Limit simultaneous jobs to avoid overwhelming cluster
 #SBATCH --output=/storage/project/r-wchu38-0/dyang379/logs/kfoldcv_%A_%a.out
 #SBATCH --error=/storage/project/r-wchu38-0/dyang379/logs/kfoldcv_%A_%a.err
 
@@ -22,7 +22,7 @@ export KFOLD_NUM=$(echo $LINE | cut -d',' -f1)
 export BETA_POSTERIOR=$(echo $LINE | cut -d',' -f2)
 
 # set project specific environmental variables
-export DATA_PATH="/storage/project/r-wchu38-0/dyang379/ASE-inference/training/gridded/"
+export RAW_DATA_PATH="/storage/project/r-wchu38-0/dyang379/ASE-inference/training/gridded/"
 export PARAM_PATH="/storage/home/hcoda1/6/dyang379/projects/GMR-inference/post-processing-parameters.csv"
 export PROJECT_SCRATCH=/storage/home/hcoda1/6/dyang379/scratch/
 export ARRAY_ID=$SLURM_ARRAY_TASK_ID
