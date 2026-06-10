@@ -961,32 +961,32 @@ class model:
             print(f"  Init z[{component_for_modes}] = {z_init[component_for_modes]:.3f}  "
                 f"(target {mv:.3f})")
 
-        # ── Diagnostic plots ──────────────────────────────────────────────────
-        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+        # # ── Diagnostic plots ──────────────────────────────────────────────────
+        # fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
-        axes[0].plot(x_grid, density, 'k-', lw=2, label='KDE')
-        axes[0].scatter(x_grid[peaks], density[peaks], color='red', zorder=5,
-                        s=80, label='Detected modes')
-        for mv in mode_values:
-            axes[0].axvline(mv, color='red', linestyle='--', alpha=0.5)
-        axes[0].set_xlabel(f"PCA Component {component_for_modes} (z-space)")
-        axes[0].set_ylabel("Density")
-        axes[0].set_title("Explore: Mode Discovery (KDE)")
-        axes[0].legend()
+        # axes[0].plot(x_grid, density, 'k-', lw=2, label='KDE')
+        # axes[0].scatter(x_grid[peaks], density[peaks], color='red', zorder=5,
+        #                 s=80, label='Detected modes')
+        # for mv in mode_values:
+        #     axes[0].axvline(mv, color='red', linestyle='--', alpha=0.5)
+        # axes[0].set_xlabel(f"PCA Component {component_for_modes} (z-space)")
+        # axes[0].set_ylabel("Density")
+        # axes[0].set_title("Explore: Mode Discovery (KDE)")
+        # axes[0].legend()
 
-        axes[1].plot(comp_samples, alpha=0.6, lw=0.8, color='steelblue')
-        for i, mv in enumerate(mode_values):
-            axes[1].axhline(mv, color='red', linestyle='--', alpha=0.7,
-                            label=f"Mode {i + 1} ≈ {mv:.2f}")
-        axes[1].set_xlabel("Sample index")
-        axes[1].set_ylabel(f"PCA Component {component_for_modes}")
-        axes[1].set_title("Explore: Trace of Diagnostic Component")
-        axes[1].legend()
+        # axes[1].plot(comp_samples, alpha=0.6, lw=0.8, color='steelblue')
+        # for i, mv in enumerate(mode_values):
+        #     axes[1].axhline(mv, color='red', linestyle='--', alpha=0.7,
+        #                     label=f"Mode {i + 1} ≈ {mv:.2f}")
+        # axes[1].set_xlabel("Sample index")
+        # axes[1].set_ylabel(f"PCA Component {component_for_modes}")
+        # axes[1].set_title("Explore: Trace of Diagnostic Component")
+        # axes[1].legend()
 
-        plt.tight_layout()
-        plt.savefig(f"../data/posterior-hmc-models/explore_modes_beta_{beta}.png", dpi=150)
-        plt.close()
-        print(f"Diagnostic plot saved.")
+        # plt.tight_layout()
+        # plt.savefig(f"../data/posterior-hmc-models/explore_modes_beta_{beta}.png", dpi=150)
+        # plt.close()
+        # print(f"Diagnostic plot saved.")
 
         # ── Store results on self for derive_posterior() ──────────────────────
         self._explore_beta             = beta
@@ -1187,9 +1187,12 @@ class model:
             np.save(f"../data/posterior-hmc-samples/Eb_samples_norm_beta_{beta}.npy", Eb_samples_norm)
             print(f"\nEb samples saved to ../data/posterior-hmc-samples/ with beta={beta}")
         else:
-            np.save(f"../data/posterior-hmc-samples/{savename}_Eb_samples_ori.npy", Eb_samples_ori)
-            np.save(f"../data/posterior-hmc-samples/{savename}_Eb_samples_norm.npy", Eb_samples_norm)
-            print(f"\nEb samples saved to ../data/posterior-hmc-samples/ with savename={savename}")
+            # add' _ori' before the '.npz' extension
+            savename_ori = savename.replace('.npz', '_ori.npz')
+            savename_norm = savename.replace('.npz', '_norm.npz')
+            np.save(savename_ori, Eb_samples_ori)
+            np.save(savename_norm, Eb_samples_norm)
+            print(f"\nEb samples saved to {savename_ori} and {savename_norm}")
         # ── Convert to temperature ─────────────────────────────────────────────
         Tb_samples = np.zeros_like(Eb_samples_ori)
         Tpmp_flat  = self.pmp.flatten()

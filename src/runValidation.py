@@ -40,8 +40,10 @@ output_path         = os.getenv('INFERENCE_READY_DATA_PATH')
 fig_save_path    = str(PROJECT_ROOT) + "/figs/parameter-tuning/"
 
 # filename for the MCMC posterior model
-mcmc_md_name    = str(PROJECT_ROOT) + f"/data/posterior-hmc-models/mcmc_run_beta_{beta_posterior}_kfold_{kfold_num}.pt"
+mcmc_md_name      = str(PROJECT_ROOT) + f"/data/posterior-hmc-models/mcmc_run_beta_{beta_posterior}_kfold_{kfold_num}.pt"
+mcmc_samples_name = str(PROJECT_ROOT) + f"/data/posterior-hmc-samples/mcmc_samples_beta_{beta_posterior}_kfold_{kfold_num}.npz"
 print("MCMC model will be saved to:", mcmc_md_name)
+print("MCMC samples will be saved to:", mcmc_samples_name)
 
 split_data_path = output_path
 folder          = raw_data_path
@@ -323,5 +325,5 @@ md.compute_MAP(beta=beta_posterior, beta_w=beta_w, n_iter=10, lr=0.1, show_plot=
 print("\n Start posterior sampling with beta =", beta_posterior)
 md.explore_posterior(beta=beta_posterior, beta_w=beta_w, component_for_modes=0)
 md.derive_posterior(warmup_steps=1000, num_samples=3000, savename=mcmc_md_name)
-md.analyze_posterior_samples(beta=beta_posterior, loading=True, savename=mcmc_md_name)
+md.analyze_posterior_samples(beta=beta_posterior, loading=True, savename=mcmc_samples_name)
 
