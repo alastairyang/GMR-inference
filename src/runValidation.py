@@ -41,7 +41,7 @@ fig_save_path    = str(PROJECT_ROOT) + "/figs/parameter-tuning/"
 
 # filename for the MCMC posterior model
 mcmc_md_name    = str(PROJECT_ROOT) + f"/data/posterior-hmc-models/mcmc_run_beta_{beta_posterior}_kfold_{kfold_num}.pt"
-
+print("MCMC model will be saved to:", mcmc_md_name)
 
 split_data_path = output_path
 folder          = raw_data_path
