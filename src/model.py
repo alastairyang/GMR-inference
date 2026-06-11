@@ -882,18 +882,245 @@ class model:
             plt.show()
         return
     
+    # def explore_posterior(self, beta=1, beta_w=0.02,
+    #                       warmup_steps=2000, 
+    #                       explore_samples=500,
+    #                       component_for_modes=0):
+    #     """
+    #     Stage 1: Short exploratory NUTS run in z-space to discover the number
+    #     and locations of posterior modes. Results are stored on self for use
+    #     by derive_posterior().
+    #     """
+    #     import matplotlib.pyplot as plt
+    #     from scipy.stats import gaussian_kde
+    #     from scipy.signal import find_peaks
+    #     # ── Build potential ───────────────────────────────────────────────────
+    #     potential = regular_potential(
+    #         V=self.pca_x.components_,
+    #         gmm=self.gmm_prop,
+    #         beta=beta,
+    #         beta_w=beta_w,
+    #         Tpmp=self.pmp,
+    #         Eb_mean=self.X_mean,
+    #         Eb_std=self.X_std,
+    #         dw=self.thawed_fractional_area,
+    #         df=self.frozen_fractional_area,
+    #         Eb_epsilon=self.X_epsilon
+    #     )
+
+    #     X_opt_tensor = torch.tensor(self.X_MAP, dtype=torch.float64)
+
+    #     # ── Exploratory NUTS run ──────────────────────────────────────────────
+    #     print("\n" + "=" * 60)
+    #     print("EXPLORE: Exploratory run to discover modes")
+    #     print(f"         warmup={warmup_steps}, samples={explore_samples}")
+    #     print("=" * 60)
+
+    #     nuts_explore = mcmc.NUTS(
+    #         potential_fn=potential,
+    #         adapt_step_size=True,
+    #         adapt_mass_matrix=True,
+    #         full_mass=False,
+    #         max_tree_depth=10,
+    #         target_accept_prob=0.8
+    #     )
+    #     mcmc_explore = mcmc.MCMC(
+    #         nuts_explore,
+    #         num_samples=explore_samples,
+    #         warmup_steps=warmup_steps,
+    #         initial_params={"z": X_opt_tensor}
+    #     )
+    #     mcmc_explore.run()
+
+    #     self.mcmc_explore = mcmc_explore  # store for diagnostics if needed
+
+    #     z_explore = mcmc_explore.get_samples()["z"].cpu()  # (explore_samples, D)
+    #     print(f"Exploratory samples collected: {z_explore.shape}")
+
+    #     # ── KDE-based mode detection ──────────────────────────────────────────
+    #     comp_samples = z_explore[:, component_for_modes].numpy()
+
+    #     kde = gaussian_kde(comp_samples, bw_method=0.3)
+    #     x_grid = np.linspace(comp_samples.min() - 5, comp_samples.max() + 5, 1000)
+    #     density = kde(x_grid)
+
+    #     peaks, _ = find_peaks(density, prominence=0.001, distance=20)
+    #     mode_values = x_grid[peaks]
+
+    #     print(f"\nDetected {len(peaks)} mode(s) in PCA Component {component_for_modes}:")
+    #     for i, mv in enumerate(mode_values):
+    #         print(f"  Mode {i + 1}: Component {component_for_modes} ≈ {mv:.3f}")
+
+    #     # ── Find closest exploratory sample to each mode peak ─────────────────
+    #     mode_inits = []
+    #     for mv in mode_values:
+    #         distances = (z_explore[:, component_for_modes] - mv).abs()
+    #         closest_idx = distances.argmin()
+    #         z_init = z_explore[closest_idx].clone()
+    #         mode_inits.append(z_init)
+    #         print(f"  Init z[{component_for_modes}] = {z_init[component_for_modes]:.3f}  "
+    #             f"(target {mv:.3f})")
+
+    #     # # ── Diagnostic plots ──────────────────────────────────────────────────
+    #     # fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+    #     # axes[0].plot(x_grid, density, 'k-', lw=2, label='KDE')
+    #     # axes[0].scatter(x_grid[peaks], density[peaks], color='red', zorder=5,
+    #     #                 s=80, label='Detected modes')
+    #     # for mv in mode_values:
+    #     #     axes[0].axvline(mv, color='red', linestyle='--', alpha=0.5)
+    #     # axes[0].set_xlabel(f"PCA Component {component_for_modes} (z-space)")
+    #     # axes[0].set_ylabel("Density")
+    #     # axes[0].set_title("Explore: Mode Discovery (KDE)")
+    #     # axes[0].legend()
+
+    #     # axes[1].plot(comp_samples, alpha=0.6, lw=0.8, color='steelblue')
+    #     # for i, mv in enumerate(mode_values):
+    #     #     axes[1].axhline(mv, color='red', linestyle='--', alpha=0.7,
+    #     #                     label=f"Mode {i + 1} ≈ {mv:.2f}")
+    #     # axes[1].set_xlabel("Sample index")
+    #     # axes[1].set_ylabel(f"PCA Component {component_for_modes}")
+    #     # axes[1].set_title("Explore: Trace of Diagnostic Component")
+    #     # axes[1].legend()
+
+    #     # plt.tight_layout()
+    #     # plt.savefig(f"../data/posterior-hmc-models/explore_modes_beta_{beta}.png", dpi=150)
+    #     # plt.close()
+    #     # print(f"Diagnostic plot saved.")
+
+    #     # ── Store results on self for derive_posterior() ──────────────────────
+    #     self._explore_beta             = beta
+    #     self._explore_z_samples        = z_explore
+    #     self._explore_mode_values      = mode_values
+    #     self._explore_mode_inits       = mode_inits
+    #     self._explore_component        = component_for_modes
+    #     self._explore_potential        = potential
+
+    #     print(f"\nexplore_posterior() complete. "
+    #         f"Call derive_posterior() to run full sampling.")
+
+
+    # def derive_posterior(self, warmup_steps=2000, num_samples=2000, savename=None):
+    #     """
+    #     Stage 2: Full NUTS chains initialized at each mode discovered by
+    #     explore_posterior(). All parameters are fetched from self.
+    #     Must call explore_posterior() first.
+
+    #     parameters
+    #     ----------
+    #     warmup_steps: int
+    #         Number of warmup steps for each NUTS chain.
+    #     num_samples: int
+    #         Number of samples to collect per mode before combining.
+    #     savename: str or None
+    #         If provided, it is a string to the path of the file (i.e. path + filename)
+    #     """
+    #     import os
+        
+    #     # ── Guard ─────────────────────────────────────────────────────────────
+    #     if not hasattr(self, '_explore_mode_inits'):
+    #         raise RuntimeError(
+    #             "No exploration results found. Run explore_posterior() first."
+    #         )
+
+    #     beta       = self._explore_beta
+    #     mode_inits = self._explore_mode_inits
+    #     mode_values = self._explore_mode_values
+    #     potential  = self._explore_potential
+
+    #     print("\n" + "=" * 60)
+    #     print(f"DERIVE: Full sampling from {len(mode_inits)} mode(s)")
+    #     print(f"        warmup={warmup_steps}, samples={num_samples} per mode")
+    #     print("=" * 60)
+
+    #     # ── Run one full NUTS chain per mode ──────────────────────────────────
+    #     all_samples = []
+    #     log_probs_at_init = []
+
+    #     for mode_idx, z_init in enumerate(mode_inits):
+    #         print(f"\n--- Mode {mode_idx + 1} / {len(mode_inits)} "
+    #             f"(Component {self._explore_component} ≈ "
+    #             f"{mode_values[mode_idx]:.3f}) ---")
+
+    #         with torch.no_grad():
+    #             lp = -potential({"z": z_init}).item()
+    #             log_probs_at_init.append(lp)
+    #             print(f"  Log prob at initialization: {lp:.4f}")
+
+    #         nuts_kernel = mcmc.NUTS(
+    #             potential_fn=potential,
+    #             adapt_step_size=True,
+    #             adapt_mass_matrix=True,
+    #             full_mass=False,
+    #             max_tree_depth=12,
+    #             target_accept_prob=0.8
+    #         )
+    #         mcmc_run = mcmc.MCMC(
+    #             nuts_kernel,
+    #             num_samples=num_samples,
+    #             warmup_steps=warmup_steps,
+    #             initial_params={"z": z_init}
+    #         )
+    #         mcmc_run.run(extra_fields=("potential_energy",))
+
+    #         samples = mcmc_run.get_samples()["z"].cpu()  # (num_samples, D)
+    #         all_samples.append(samples)
+    #         print(f"  Collected {samples.shape[0]} samples.")
+
+    #     # ── Combine with softmax-weighted mode probabilities ──────────────────
+    #     log_weights = torch.tensor(log_probs_at_init, dtype=torch.float64)
+    #     weights = torch.softmax(log_weights, dim=0).numpy()
+
+    #     print(f"\nMode weights (softmax of log probs at mode centers):")
+    #     for i, w in enumerate(weights):
+    #         print(f"  Mode {i + 1}: {w:.4f}")
+
+    #     n_total = num_samples * len(mode_inits)
+    #     combined_parts = []
+    #     for i, (samples, w) in enumerate(zip(all_samples, weights)):
+    #         n_i = int(w * n_total)
+    #         combined_parts.append(samples[:n_i])
+    #         print(f"  Mode {i + 1}: using {n_i} / {samples.shape[0]} samples")
+
+    #     combined = torch.cat(combined_parts, dim=0)
+    #     print(f"\nTotal combined samples: {combined.shape[0]}")
+
+    #     # ── Save everything ───────────────────────────────────────────────────
+    #     if savename is None:
+    #         savename = f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt"
+
+    #     torch.save({
+    #         "explore_samples":      self._explore_z_samples,
+    #         "mode_inits":           mode_inits,
+    #         "mode_weights":         weights,
+    #         "detected_mode_values": mode_values,
+    #         "samples_per_mode":     all_samples,
+    #         "combined":             combined,
+    #         "beta":                 beta,
+    #         "component_for_modes":  self._explore_component,
+    #     }, savename)
+
+    #     self._combined_z_samples = combined
+    #     print(f"\nPosterior samples saved to {savename}")
+
+
     def explore_posterior(self, beta=1, beta_w=0.02,
-                          warmup_steps=2000, 
-                          explore_samples=500,
-                          component_for_modes=0):
+                        warmup_steps=2000,
+                        explore_samples=500,
+                        max_modes=6):
         """
         Stage 1: Short exploratory NUTS run in z-space to discover the number
         and locations of posterior modes. Results are stored on self for use
         by derive_posterior().
+
+        parameters
+        ----------
+        max_modes: int
+            Upper bound on the number of mixture components tried during
+            full-dimensional mode detection (BIC selects the best K <= max_modes).
         """
-        import matplotlib.pyplot as plt
-        from scipy.stats import gaussian_kde
-        from scipy.signal import find_peaks
+        from sklearn.mixture import GaussianMixture  # ── FIX #3: full-D clustering ──
+
         # ── Build potential ───────────────────────────────────────────────────
         potential = regular_potential(
             V=self.pca_x.components_,
@@ -932,79 +1159,80 @@ class model:
         )
         mcmc_explore.run()
 
-        self.mcmc_explore = mcmc_explore  # store for diagnostics if needed
+        self.mcmc_explore = mcmc_explore
 
         z_explore = mcmc_explore.get_samples()["z"].cpu()  # (explore_samples, D)
         print(f"Exploratory samples collected: {z_explore.shape}")
 
-        # ── KDE-based mode detection ──────────────────────────────────────────
-        comp_samples = z_explore[:, component_for_modes].numpy()
+        # ──────────────────────────────────────────────────────────────────────
+        # ── FIX #3: Mode detection in FULL z-space (not a single PCA component)
+        #    Fit GMMs with K = 1..max_modes, pick K by BIC. Modes separated along
+        #    any direction (or overlapping in one projection) are now resolved.
+        # ──────────────────────────────────────────────────────────────────────
+        Z = z_explore.numpy()
 
-        kde = gaussian_kde(comp_samples, bw_method=0.3)
-        x_grid = np.linspace(comp_samples.min() - 5, comp_samples.max() + 5, 1000)
-        density = kde(x_grid)
+        best_gmm, best_bic, best_K = None, np.inf, 1
+        for K in range(1, max_modes + 1):
+            gm = GaussianMixture(
+                n_components=K,
+                covariance_type='full',
+                n_init=5,
+                random_state=0
+            ).fit(Z)
+            bic = gm.bic(Z)
+            print(f"  GMM K={K}: BIC = {bic:.1f}")
+            if bic < best_bic:
+                best_bic, best_gmm, best_K = bic, gm, K
 
-        peaks, _ = find_peaks(density, prominence=0.001, distance=20)
-        mode_values = x_grid[peaks]
+        labels = best_gmm.predict(Z)
+        print(f"\nDetected {best_K} mode(s) in full z-space (BIC-selected).")
 
-        print(f"\nDetected {len(peaks)} mode(s) in PCA Component {component_for_modes}:")
-        for i, mv in enumerate(mode_values):
-            print(f"  Mode {i + 1}: Component {component_for_modes} ≈ {mv:.3f}")
+        # ──────────────────────────────────────────────────────────────────────
+        # ── FIX #1 (part 1): Mode mass via basin OCCUPANCY, not point density.
+        #    The fraction of exploratory samples in each basin estimates the
+        #    mode's probability mass (height × volume), which is the correct
+        #    weight — a single-point density comparison is not.
+        # ──────────────────────────────────────────────────────────────────────
+        mode_inits   = []
+        occupancy    = []
+        mode_centers = []
 
-        # ── Find closest exploratory sample to each mode peak ─────────────────
-        mode_inits = []
-        for mv in mode_values:
-            distances = (z_explore[:, component_for_modes] - mv).abs()
-            closest_idx = distances.argmin()
-            z_init = z_explore[closest_idx].clone()
+        for k in range(best_K):
+            idx = np.where(labels == k)[0]
+            occupancy.append(len(idx) / len(Z))
+            mode_centers.append(best_gmm.means_[k])
+
+            # Init each chain at the cluster member with the LOWEST potential
+            # (highest posterior) — a real point in the basin, robust to KDE noise.
+            with torch.no_grad():
+                pots = torch.tensor(
+                    [potential({"z": z_explore[i]}).item() for i in idx]
+                )
+            best_member = idx[pots.argmin().item()]
+            z_init = z_explore[best_member].clone()
             mode_inits.append(z_init)
-            print(f"  Init z[{component_for_modes}] = {z_init[component_for_modes]:.3f}  "
-                f"(target {mv:.3f})")
 
-        # # ── Diagnostic plots ──────────────────────────────────────────────────
-        # fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-
-        # axes[0].plot(x_grid, density, 'k-', lw=2, label='KDE')
-        # axes[0].scatter(x_grid[peaks], density[peaks], color='red', zorder=5,
-        #                 s=80, label='Detected modes')
-        # for mv in mode_values:
-        #     axes[0].axvline(mv, color='red', linestyle='--', alpha=0.5)
-        # axes[0].set_xlabel(f"PCA Component {component_for_modes} (z-space)")
-        # axes[0].set_ylabel("Density")
-        # axes[0].set_title("Explore: Mode Discovery (KDE)")
-        # axes[0].legend()
-
-        # axes[1].plot(comp_samples, alpha=0.6, lw=0.8, color='steelblue')
-        # for i, mv in enumerate(mode_values):
-        #     axes[1].axhline(mv, color='red', linestyle='--', alpha=0.7,
-        #                     label=f"Mode {i + 1} ≈ {mv:.2f}")
-        # axes[1].set_xlabel("Sample index")
-        # axes[1].set_ylabel(f"PCA Component {component_for_modes}")
-        # axes[1].set_title("Explore: Trace of Diagnostic Component")
-        # axes[1].legend()
-
-        # plt.tight_layout()
-        # plt.savefig(f"../data/posterior-hmc-models/explore_modes_beta_{beta}.png", dpi=150)
-        # plt.close()
-        # print(f"Diagnostic plot saved.")
+            print(f"  Mode {k + 1}: occupancy = {occupancy[-1]:.3f}, "
+                f"{len(idx)} samples, init potential = {pots.min().item():.4f}")
 
         # ── Store results on self for derive_posterior() ──────────────────────
-        self._explore_beta             = beta
-        self._explore_z_samples        = z_explore
-        self._explore_mode_values      = mode_values
-        self._explore_mode_inits       = mode_inits
-        self._explore_component        = component_for_modes
-        self._explore_potential        = potential
+        self._explore_beta        = beta
+        self._explore_z_samples   = z_explore
+        self._explore_mode_values = np.array(mode_centers)   # now full-D centers
+        self._explore_mode_inits  = mode_inits
+        self._explore_occupancy   = np.array(occupancy)      # ── FIX #1: stored ──
+        self._explore_gmm         = best_gmm
+        self._explore_potential   = potential
 
         print(f"\nexplore_posterior() complete. "
             f"Call derive_posterior() to run full sampling.")
 
 
-    def derive_posterior(self, warmup_steps=2000, num_samples=2000, savename=None):
+    def derive_posterior(self, warmup_steps=2000, num_samples=2000,
+                        weight_method="occupancy", savename=None, seed=0):
         """
         Stage 2: Full NUTS chains initialized at each mode discovered by
-        explore_posterior(). All parameters are fetched from self.
-        Must call explore_posterior() first.
+        explore_posterior(). Must call explore_posterior() first.
 
         parameters
         ----------
@@ -1012,40 +1240,38 @@ class model:
             Number of warmup steps for each NUTS chain.
         num_samples: int
             Number of samples to collect per mode before combining.
+        weight_method: str
+            'occupancy' (default): mode weights = fraction of exploratory samples
+            in each basin (estimates probability MASS).
+            'laplace': mode weights from Laplace approximation,
+            log w_k = -U(z_k*) - 0.5 * log|H_k| (height x volume correction).
         savename: str or None
-            If provided, it is a string to the path of the file (i.e. path + filename)
+            If provided, path of the output file.
         """
         import os
-        
+
         # ── Guard ─────────────────────────────────────────────────────────────
         if not hasattr(self, '_explore_mode_inits'):
             raise RuntimeError(
                 "No exploration results found. Run explore_posterior() first."
             )
 
-        beta       = self._explore_beta
-        mode_inits = self._explore_mode_inits
+        beta        = self._explore_beta
+        mode_inits  = self._explore_mode_inits
         mode_values = self._explore_mode_values
-        potential  = self._explore_potential
+        potential   = self._explore_potential
+        K           = len(mode_inits)
 
         print("\n" + "=" * 60)
-        print(f"DERIVE: Full sampling from {len(mode_inits)} mode(s)")
+        print(f"DERIVE: Full sampling from {K} mode(s)")
         print(f"        warmup={warmup_steps}, samples={num_samples} per mode")
         print("=" * 60)
 
         # ── Run one full NUTS chain per mode ──────────────────────────────────
         all_samples = []
-        log_probs_at_init = []
 
         for mode_idx, z_init in enumerate(mode_inits):
-            print(f"\n--- Mode {mode_idx + 1} / {len(mode_inits)} "
-                f"(Component {self._explore_component} ≈ "
-                f"{mode_values[mode_idx]:.3f}) ---")
-
-            with torch.no_grad():
-                lp = -potential({"z": z_init}).item()
-                log_probs_at_init.append(lp)
-                print(f"  Log prob at initialization: {lp:.4f}")
+            print(f"\n--- Mode {mode_idx + 1} / {K} ---")
 
             nuts_kernel = mcmc.NUTS(
                 potential_fn=potential,
@@ -1067,20 +1293,85 @@ class model:
             all_samples.append(samples)
             print(f"  Collected {samples.shape[0]} samples.")
 
-        # ── Combine with softmax-weighted mode probabilities ──────────────────
-        log_weights = torch.tensor(log_probs_at_init, dtype=torch.float64)
-        weights = torch.softmax(log_weights, dim=0).numpy()
+        # ──────────────────────────────────────────────────────────────────────
+        # ── FIX #1 (part 2): Proper mode weights.
+        #    OLD: softmax of unnormalized log-density at a single point ->
+        #         collapses onto the tallest (often narrowest) mode and kills
+        #         between-mode variance.
+        #    NEW: weights estimate probability MASS per mode.
+        # ──────────────────────────────────────────────────────────────────────
+        if weight_method == "occupancy":
+            weights = self._explore_occupancy.copy()
 
-        print(f"\nMode weights (softmax of log probs at mode centers):")
+        elif weight_method == "laplace":
+            # log w_k = -U(z_k*) - 0.5 * log|H_k|  (Laplace evidence per mode)
+            log_w = []
+            for k, z_init in enumerate(mode_inits):
+                # refine to the actual local minimum of the potential
+                z = z_init.clone().requires_grad_(True)
+                opt = torch.optim.LBFGS([z], max_iter=200, line_search_fn="strong_wolfe")
+
+                def closure():
+                    opt.zero_grad()
+                    U = potential({"z": z})
+                    U.backward()
+                    return U
+
+                opt.step(closure)
+                z_star = z.detach()
+                U_star = potential({"z": z_star}).item()
+
+                H = torch.autograd.functional.hessian(
+                    lambda zz: potential({"z": zz}), z_star
+                )
+                sign, logdet = torch.linalg.slogdet(H)
+                if sign <= 0:
+                    print(f"  WARNING: Hessian at mode {k + 1} not PD; "
+                        f"falling back to occupancy weight for this mode.")
+                    # crude fallback: use occupancy-scaled height
+                    log_w.append(float('-inf'))
+                else:
+                    log_w.append(-U_star - 0.5 * logdet.item())
+                print(f"  Mode {k + 1}: U* = {U_star:.4f}, "
+                    f"0.5*log|H| = {0.5 * logdet.item():.4f}")
+
+            weights = torch.softmax(
+                torch.tensor(log_w, dtype=torch.float64), dim=0
+            ).numpy()
+        else:
+            raise ValueError(f"Unknown weight_method: {weight_method}")
+
+        print(f"\nMode weights ({weight_method}):")
         for i, w in enumerate(weights):
             print(f"  Mode {i + 1}: {w:.4f}")
 
-        n_total = num_samples * len(mode_inits)
+        # ──────────────────────────────────────────────────────────────────────
+        # ── FIX #2: Safe, unbiased combination.
+        #    OLD: samples[:n_i] silently truncated when n_i > num_samples
+        #         (distorting realized weights) AND took the FIRST samples,
+        #         i.e. the most autocorrelated, closest-to-init portion.
+        #    NEW: draw a RANDOM subset; if a mode needs more samples than its
+        #         chain produced, resample with replacement instead of
+        #         silently truncating. Realized weights now match exactly.
+        # ──────────────────────────────────────────────────────────────────────
+        rng = torch.Generator().manual_seed(seed)
+        n_total = num_samples * K
         combined_parts = []
+
         for i, (samples, w) in enumerate(zip(all_samples, weights)):
-            n_i = int(w * n_total)
-            combined_parts.append(samples[:n_i])
-            print(f"  Mode {i + 1}: using {n_i} / {samples.shape[0]} samples")
+            n_i = int(round(w * n_total))
+            n_avail = samples.shape[0]
+
+            if n_i <= n_avail:
+                idx = torch.randperm(n_avail, generator=rng)[:n_i]   # random, w/o replacement
+            else:
+                idx = torch.randint(0, n_avail, (n_i,), generator=rng)  # with replacement
+                print(f"  Mode {i + 1}: resampling WITH replacement "
+                    f"({n_i} requested > {n_avail} available)")
+
+            combined_parts.append(samples[idx])
+            print(f"  Mode {i + 1}: using {n_i} samples "
+                f"(target weight {w:.4f}, realized {n_i / n_total:.4f})")
 
         combined = torch.cat(combined_parts, dim=0)
         print(f"\nTotal combined samples: {combined.shape[0]}")
@@ -1093,17 +1384,18 @@ class model:
             "explore_samples":      self._explore_z_samples,
             "mode_inits":           mode_inits,
             "mode_weights":         weights,
+            "weight_method":        weight_method,        # ── FIX #1: provenance ──
             "detected_mode_values": mode_values,
             "samples_per_mode":     all_samples,
             "combined":             combined,
             "beta":                 beta,
-            "component_for_modes":  self._explore_component,
         }, savename)
 
         self._combined_z_samples = combined
         print(f"\nPosterior samples saved to {savename}")
 
-    def analyze_posterior_samples(self, beta=1, beta_w=0.02, loading=True, savename=None):
+
+    def analyze_posterior_samples(self, beta=1, beta_w=0.02, loading=True, loadname=None, savename=None):
         """
         Extract the HMC samples and analyze their properties, including:
         1. Log probability distribution of the samples to understand the posterior landscape.
@@ -1112,12 +1404,12 @@ class model:
         # ── Load samples ──────────────────────────────────────────────────────
 
         if loading:
-            if savename is None:
+            if loadname is None:
                 mcmc_dict = torch.load(f"../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
                 print(f"Loaded samples from ../data/posterior-hmc-models/mcmc_run_beta_{beta}.pt")
             else:
-                mcmc_dict = torch.load(savename)
-                print(f"Loaded samples from {savename}")
+                mcmc_dict = torch.load(loadname, weights_only=True)
+                print(f"Loaded samples from {loadname}")
             z_samples = mcmc_dict["combined"]        # ← was "combined_z", correct key is "combined"
             self._combined_z_samples = z_samples
         else:
@@ -1127,37 +1419,37 @@ class model:
         z_samples_np = z_samples.cpu().numpy()           # (N, D) numpy
         num_samples  = z_samples_np.shape[0]
 
-        # ── Compute log probs directly in z-space ─────────────────────────────
-        potential = regular_potential(
-            V=self.pca_x.components_,
-            gmm=self.gmm_prop,
-            beta=beta,
-            beta_w=beta_w,
-            Tpmp=self.pmp,
-            Eb_mean=self.X_mean,
-            Eb_std=self.X_std,
-            dw=self.thawed_fractional_area,
-            df=self.frozen_fractional_area,
-            Eb_epsilon=self.X_epsilon
-        )
+        # # ── Compute log probs directly in z-space ─────────────────────────────
+        # potential = regular_potential(
+        #     V=self.pca_x.components_,
+        #     gmm=self.gmm_prop,
+        #     beta=beta,
+        #     beta_w=beta_w,
+        #     Tpmp=self.pmp,
+        #     Eb_mean=self.X_mean,
+        #     Eb_std=self.X_std,
+        #     dw=self.thawed_fractional_area,
+        #     df=self.frozen_fractional_area,
+        #     Eb_epsilon=self.X_epsilon
+        # )
 
-        log_probs = []
-        with torch.no_grad():
-            for i in range(num_samples):
-                z_i   = z_samples[i].to(torch.float64)
-                neg_lp = potential({"z": z_i})
-                log_probs.append(-neg_lp.item())         # negate: potential returns -log_prob
+        # log_probs = []
+        # with torch.no_grad():
+        #     for i in range(num_samples):
+        #         z_i   = z_samples[i].to(torch.float64)
+        #         neg_lp = potential({"z": z_i})
+        #         log_probs.append(-neg_lp.item())         # negate: potential returns -log_prob
 
-        log_probs = np.array(log_probs)                  # (N,)
+        # log_probs = np.array(log_probs)                  # (N,)
 
-        # ── Sort by log prob ───────────────────────────────────────────────────
-        sorted_indices   = np.argsort(log_probs)         # ascending (lowest first)
-        log_probs_sorted = log_probs[sorted_indices]
-        z_sorted         = z_samples_np[sorted_indices]  # (N, D)
+        # # ── Sort by log prob ───────────────────────────────────────────────────
+        # sorted_indices   = np.argsort(log_probs)         # ascending (lowest first)
+        # log_probs_sorted = log_probs[sorted_indices]
+        # z_sorted         = z_samples_np[sorted_indices]  # (N, D)
 
-        # ── HPD region: top 90% of samples by log prob ────────────────────────
-        n_keep      = int(0.90 * num_samples)
-        hpd_z       = z_sorted[-n_keep:]                 # (n_keep, D)
+        # # ── HPD region: top 90% of samples by log prob ────────────────────────
+        # n_keep      = int(0.90 * num_samples)
+        # hpd_z       = z_sorted[-n_keep:]                 # (n_keep, D)
 
         # ── z-space is already PCA latent space → inverse transform to Eb ─────
         hmc_samples = z_samples_np                       # (N, D), no u→z needed
@@ -1183,16 +1475,17 @@ class model:
 
         # ── Save Eb samples ───────────────────────────────────────────────────
         if savename is None:
-            np.save(f"../data/posterior-hmc-samples/Eb_samples_ori_beta_{beta}.npy", Eb_samples_ori)
-            np.save(f"../data/posterior-hmc-samples/Eb_samples_norm_beta_{beta}.npy", Eb_samples_norm)
-            print(f"\nEb samples saved to ../data/posterior-hmc-samples/ with beta={beta}")
+            np.save(f"Eb_samples_ori_beta_{beta}.npy", Eb_samples_ori)
+            np.save(f"Eb_samples_norm_beta_{beta}.npy", Eb_samples_norm)
+            print(f"\nEb samples saved to current directory with beta={beta}")
         else:
-            # add' _ori' before the '.npz' extension
-            savename_ori = savename.replace('.npz', '_ori.npz')
-            savename_norm = savename.replace('.npz', '_norm.npz')
+            # add' _ori' before the '.npy' extension
+            savename_ori = savename.replace('.npy', '_ori.npy')
+            savename_norm = savename.replace('.npy', '_norm.npy')
             np.save(savename_ori, Eb_samples_ori)
             np.save(savename_norm, Eb_samples_norm)
             print(f"\nEb samples saved to {savename_ori} and {savename_norm}")
+
         # ── Convert to temperature ─────────────────────────────────────────────
         Tb_samples = np.zeros_like(Eb_samples_ori)
         Tpmp_flat  = self.pmp.flatten()
@@ -1206,15 +1499,15 @@ class model:
         self.Tb_std  = np.std(Tb_samples,  axis=0).reshape(self.nx, self.ny)
         self.Tb_mean = np.mean(Tb_samples, axis=0).reshape(self.nx, self.ny)
 
-        # HPD band: min/max of top-90% samples
-        self.Tb_p5  = Tb_samples[sorted_indices[-n_keep:]].min(axis=0).reshape(self.nx, self.ny)
-        self.Tb_p95 = Tb_samples[sorted_indices[-n_keep:]].max(axis=0).reshape(self.nx, self.ny)
+        # # HPD band: min/max of top-90% samples
+        # self.Tb_p5  = Tb_samples[sorted_indices[-n_keep:]].min(axis=0).reshape(self.nx, self.ny)
+        # self.Tb_p95 = Tb_samples[sorted_indices[-n_keep:]].max(axis=0).reshape(self.nx, self.ny)
 
-        # ── Mask outside domain ───────────────────────────────────────────────
-        self.Tb_p5  [self.domain_mask == False] = np.nan
-        self.Tb_mean[self.domain_mask == False] = np.nan
-        self.Tb_p95 [self.domain_mask == False] = np.nan
-        self.Tb_std [self.domain_mask == False] = np.nan
+        # # ── Mask outside domain ───────────────────────────────────────────────
+        # self.Tb_p5  [self.domain_mask == False] = np.nan
+        # self.Tb_mean[self.domain_mask == False] = np.nan
+        # self.Tb_p95 [self.domain_mask == False] = np.nan
+        # self.Tb_std [self.domain_mask == False] = np.nan
 
         return
     

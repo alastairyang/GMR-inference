@@ -36,7 +36,8 @@ err_prior_eps = 1 # error margin in prior predictive check
 
 raw_data_path       = os.getenv('RAW_DATA_PATH')
 param_path          = os.getenv('PARAM_PATH')
-output_path         = os.getenv('INFERENCE_READY_DATA_PATH')
+data_path           = os.getenv('INFERENCE_READY_DATA_PATH')
+posterior_path      = os.getenv('POSTERIOR_PATH')
 fig_save_path    = str(PROJECT_ROOT) + "/figs/parameter-tuning/"
 
 # filename for the MCMC posterior model
@@ -45,7 +46,7 @@ mcmc_samples_name = str(PROJECT_ROOT) + f"/data/posterior-hmc-samples/mcmc_sampl
 print("MCMC model will be saved to:", mcmc_md_name)
 print("MCMC samples will be saved to:", mcmc_samples_name)
 
-split_data_path = output_path
+split_data_path = data_path
 folder          = raw_data_path
 # ------------------------------------------------- LOAD SIMULATION DATA -------------------------------------------------
 # get the DATA_PATH from the environment variable
@@ -325,5 +326,8 @@ md.compute_MAP(beta=beta_posterior, beta_w=beta_w, n_iter=10, lr=0.1, show_plot=
 print("\n Start posterior sampling with beta =", beta_posterior)
 md.explore_posterior(beta=beta_posterior, beta_w=beta_w, component_for_modes=0)
 md.derive_posterior(warmup_steps=1000, num_samples=3000, savename=mcmc_md_name)
-md.analyze_posterior_samples(beta=beta_posterior, loading=True, savename=mcmc_samples_name)
+md.analyze_posterior_samples(beta=beta_posterior, 
+                             loading=True, 
+                             loadname=mcmc_md_name,
+                             savename=mcmc_samples_name)
 print("Posterior sampling completed!")

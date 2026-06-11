@@ -25,6 +25,7 @@ export BETA_POSTERIOR=$(echo $LINE | cut -d',' -f2)
 export RAW_DATA_PATH="/storage/project/r-wchu38-0/dyang379/ASE-inference/training/gridded/"
 export PARAM_PATH="/storage/home/hcoda1/6/dyang379/projects/GMR-inference/post-processing-parameters.csv"
 export INFERENCE_READY_DATA_PATH="/storage/project/r-wchu38-0/dyang379/ASE-inference/train-validate-test/"
+export POSTERIOR_PATH="/storage/project/r-wchu38-0/dyang379/ASE-inference/posteriors/"
 export PROJECT_SCRATCH=/storage/home/hcoda1/6/dyang379/scratch/
 export ARRAY_ID=$SLURM_ARRAY_TASK_ID
 
