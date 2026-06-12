@@ -195,7 +195,7 @@ def build_decorr_weight_matrix(X_vec, combined_idx):
     weight_mtx = redundancy_weights(sim_mtx)
     return weight_mtx, sim_mtx
 
-def low_high_percentile(samples, log_probs, low_percentile=5, high_percentile=95):
+def low_high_joint_percentile(samples, log_probs, low_percentile=5, high_percentile=95):
     """
     Compute the low and high percentiles of the samples based on their log probabilities.
 
@@ -232,6 +232,31 @@ def low_high_percentile(samples, log_probs, low_percentile=5, high_percentile=95
     low_bound = samples_sorted[idx_low]  
     high_bound = samples_sorted[idx_high]  
     return low_bound, high_bound
+
+def low_high_marginal_percentile(samples, low_percentile=5, high_percentile=95):
+    """
+    Compute marginal percentile bounds across all features independently.
+
+    Parameters
+    ----------
+    samples : array, shape (n_samples, n_features)
+        MCMC samples drawn from the posterior.
+    low_percentile : float
+        Lower percentile (default: 5) → lower bound of 90% credible interval.
+    high_percentile : float
+        Upper percentile (default: 95) → upper bound of 90% credible interval.
+
+    Returns
+    -------
+    low_bound : array, shape (n_features,)
+        Marginal low_percentile bound per feature.
+    high_bound : array, shape (n_features,)
+        Marginal high_percentile bound per feature.
+    """
+    low_bound  = np.percentile(samples, low_percentile,  axis=0)
+    high_bound = np.percentile(samples, high_percentile, axis=0)
+    return low_bound, high_bound
+
 
 def read_exp(filepath):
     """

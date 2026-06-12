@@ -1103,23 +1103,33 @@ class model:
     #     self._combined_z_samples = combined
     #     print(f"\nPosterior samples saved to {savename}")
 
-
     def explore_posterior(self, beta=1, beta_w=0.02,
-                        warmup_steps=2000,
-                        explore_samples=500,
-                        max_modes=6):
+                        warmup_steps=1500,
+                        explore_samples=2000,     # ── FIX #4: per-chain budget up from 500 ──
+                        num_chains=4,             # ── FIX #4: multiple chains ──
+                        max_modes=6,
+                        seed=0):
         """
-        Stage 1: Short exploratory NUTS run in z-space to discover the number
-        and locations of posterior modes. Results are stored on self for use
-        by derive_posterior().
+        Stage 1: Multi-chain exploratory NUTS run in z-space to discover the
+        number and locations of posterior modes. Results are stored on self
+        for use by derive_posterior().
 
         parameters
         ----------
+        num_chains: int
+            Number of independent exploratory chains, started from
+            overdispersed initializations around the MAP.
+        init_jitter: float
+            Std of the Gaussian perturbation (in z-space units) applied to
+            the MAP to initialize chains 2..num_chains. Chain 1 always starts
+            exactly at the MAP. Scale this to the expected posterior width;
+            too small and chains can't discover separated modes.
+        explore_samples: int
+            Post-warmup samples PER CHAIN. Total pool = num_chains * explore_samples.
         max_modes: int
-            Upper bound on the number of mixture components tried during
-            full-dimensional mode detection (BIC selects the best K <= max_modes).
+            Upper bound on mixture components tried during mode detection.
         """
-        from sklearn.mixture import GaussianMixture  # ── FIX #3: full-D clustering ──
+        from sklearn.mixture import GaussianMixture
 
         # ── Build potential ───────────────────────────────────────────────────
         potential = regular_potential(
@@ -1136,39 +1146,86 @@ class model:
         )
 
         X_opt_tensor = torch.tensor(self.X_MAP, dtype=torch.float64)
+        D = X_opt_tensor.shape[0]
 
-        # ── Exploratory NUTS run ──────────────────────────────────────────────
         print("\n" + "=" * 60)
-        print("EXPLORE: Exploratory run to discover modes")
-        print(f"         warmup={warmup_steps}, samples={explore_samples}")
+        print("EXPLORE: Multi-chain exploratory run to discover modes")
+        print(f"         chains={num_chains}, warmup={warmup_steps}, "
+            f"samples={explore_samples}/chain "
+            f"(pool = {num_chains * explore_samples})")
         print("=" * 60)
 
-        nuts_explore = mcmc.NUTS(
-            potential_fn=potential,
-            adapt_step_size=True,
-            adapt_mass_matrix=True,
-            full_mass=False,
-            max_tree_depth=10,
-            target_accept_prob=0.8
+        # ──────────────────────────────────────────────────────────────────────
+        # ── FIX #4 (part 1): Overdispersed initializations.
+        #    OLD: one chain started at the MAP -> a single NUTS chain rarely
+        #         crosses energy barriers, so modes it never visits are
+        #         invisible to the entire pipeline (missing variance).
+        #    NEW: chain 1 at the MAP; chains 2..N at MAP + Gaussian jitter.
+        #         Chains landing in different basins reveal multimodality
+        #         AND give between-chain diagnostics for free.
+        # ──────────────────────────────────────────────────────────────────────
+        z_std = torch.tensor(
+            np.sqrt(self.pca_x.explained_variance_), dtype=torch.float64
         )
-        mcmc_explore = mcmc.MCMC(
-            nuts_explore,
-            num_samples=explore_samples,
-            warmup_steps=warmup_steps,
-            initial_params={"z": X_opt_tensor}
-        )
-        mcmc_explore.run()
+        init_jitter = 0.1   # ≈ 2-3 posterior stds, given the observed 
 
-        self.mcmc_explore = mcmc_explore
-
-        z_explore = mcmc_explore.get_samples()["z"].cpu()  # (explore_samples, D)
-        print(f"Exploratory samples collected: {z_explore.shape}")
+        gen = torch.Generator().manual_seed(seed)
+        chain_inits = [X_opt_tensor.clone()]
+        for c in range(1, num_chains):
+            jitter = torch.randn(D, generator=gen, dtype=torch.float64) * init_jitter * z_std
+            chain_inits.append(X_opt_tensor + jitter)
 
         # ──────────────────────────────────────────────────────────────────────
-        # ── FIX #3: Mode detection in FULL z-space (not a single PCA component)
-        #    Fit GMMs with K = 1..max_modes, pick K by BIC. Modes separated along
-        #    any direction (or overlapping in one projection) are now resolved.
+        # ── FIX #4 (part 2): Run each chain independently and pool.
+        #    Sequential loop keeps per-chain control over initial_params
+        #    (Pyro's num_chains + custom potential_fn/initial_params is fiddly);
+        #    swap in multiprocessing later if wall time becomes an issue.
         # ──────────────────────────────────────────────────────────────────────
+        per_chain_samples = []
+
+        for c, z0 in enumerate(chain_inits):
+            print(f"\n--- Explore chain {c + 1} / {num_chains} ---")
+            nuts_explore = mcmc.NUTS(
+                potential_fn=potential,
+                adapt_step_size=True,
+                adapt_mass_matrix=True,
+                full_mass=False,
+                max_tree_depth=10,
+                target_accept_prob=0.8
+            )
+            mcmc_explore = mcmc.MCMC(
+                nuts_explore,
+                num_samples=explore_samples,
+                warmup_steps=warmup_steps,
+                initial_params={"z": z0}
+            )
+            mcmc_explore.run()
+            zc = mcmc_explore.get_samples()["z"].cpu()  # (explore_samples, D)
+            per_chain_samples.append(zc)
+            print(f"  Chain {c + 1}: collected {zc.shape[0]} samples, "
+                f"per-dim mean range [{zc.mean(0).min():.3f}, {zc.mean(0).max():.3f}]")
+
+        # ──────────────────────────────────────────────────────────────────────
+        # ── FIX #4 (part 3): Cheap between-chain diagnostic (split-free R-hat
+        #    proxy). If chains disagree on means relative to within-chain spread,
+        #    either the posterior is multimodal (good — GMM will catch it) or
+        #    mixing is poor (bad — distrust occupancy weights, raise budgets).
+        # ──────────────────────────────────────────────────────────────────────
+        chain_means = torch.stack([s.mean(0) for s in per_chain_samples])   # (C, D)
+        chain_vars  = torch.stack([s.var(0)  for s in per_chain_samples])   # (C, D)
+        B = chain_means.var(0)            # between-chain variance of means
+        W = chain_vars.mean(0)            # mean within-chain variance
+        rhat_proxy = torch.sqrt((W + B) / W)
+        print(f"\nBetween-chain diagnostic (R-hat proxy): "
+            f"max = {rhat_proxy.max():.3f}, mean = {rhat_proxy.mean():.3f}")
+        if rhat_proxy.max() > 1.05:
+            print("  NOTE: chains disagree on some dimensions. Multimodality "
+                "or slow mixing — inspect the GMM result below.")
+
+        z_explore = torch.cat(per_chain_samples, dim=0)  # ── FIX #4: pooled ──
+        print(f"\nPooled exploratory samples: {z_explore.shape}")
+
+        # ── FIX #3 (unchanged logic, now on the pooled set): full z-space GMM ──
         Z = z_explore.numpy()
 
         best_gmm, best_bic, best_K = None, np.inf, 1
@@ -1187,12 +1244,11 @@ class model:
         labels = best_gmm.predict(Z)
         print(f"\nDetected {best_K} mode(s) in full z-space (BIC-selected).")
 
-        # ──────────────────────────────────────────────────────────────────────
-        # ── FIX #1 (part 1): Mode mass via basin OCCUPANCY, not point density.
-        #    The fraction of exploratory samples in each basin estimates the
-        #    mode's probability mass (height × volume), which is the correct
-        #    weight — a single-point density comparison is not.
-        # ──────────────────────────────────────────────────────────────────────
+        # ── FIX #1 (unchanged logic): occupancy from the POOLED samples.
+        #    Note: pooling equal-length chains from overdispersed inits gives a
+        #    rougher mass estimate than a single well-mixed chain would; if
+        #    occupancy and 'laplace' weights disagree strongly in
+        #    derive_posterior(), trust 'laplace'. ──────────────────────────────
         mode_inits   = []
         occupancy    = []
         mode_centers = []
@@ -1202,8 +1258,6 @@ class model:
             occupancy.append(len(idx) / len(Z))
             mode_centers.append(best_gmm.means_[k])
 
-            # Init each chain at the cluster member with the LOWEST potential
-            # (highest posterior) — a real point in the basin, robust to KDE noise.
             with torch.no_grad():
                 pots = torch.tensor(
                     [potential({"z": z_explore[i]}).item() for i in idx]
@@ -1212,17 +1266,25 @@ class model:
             z_init = z_explore[best_member].clone()
             mode_inits.append(z_init)
 
+            # ── FIX #4 (part 4): report which chains visited this basin.
+            #    A mode visited by only one chain is real but its occupancy
+            #    weight is unreliable. ─────────────────────────────────────────
+            chain_of = np.array(idx) // explore_samples
+            visiting = np.unique(chain_of)
             print(f"  Mode {k + 1}: occupancy = {occupancy[-1]:.3f}, "
-                f"{len(idx)} samples, init potential = {pots.min().item():.4f}")
+                f"{len(idx)} samples, visited by chain(s) {visiting + 1}, "
+                f"init potential = {pots.min().item():.4f}")
 
         # ── Store results on self for derive_posterior() ──────────────────────
-        self._explore_beta        = beta
-        self._explore_z_samples   = z_explore
-        self._explore_mode_values = np.array(mode_centers)   # now full-D centers
-        self._explore_mode_inits  = mode_inits
-        self._explore_occupancy   = np.array(occupancy)      # ── FIX #1: stored ──
-        self._explore_gmm         = best_gmm
-        self._explore_potential   = potential
+        self._explore_beta          = beta
+        self._explore_z_samples     = z_explore
+        self._explore_chain_samples = per_chain_samples   # ── FIX #4: kept per-chain ──
+        self._explore_rhat_proxy    = rhat_proxy          # ── FIX #4: diagnostics ──
+        self._explore_mode_values   = np.array(mode_centers)
+        self._explore_mode_inits    = mode_inits
+        self._explore_occupancy     = np.array(occupancy)
+        self._explore_gmm           = best_gmm
+        self._explore_potential     = potential
 
         print(f"\nexplore_posterior() complete. "
             f"Call derive_posterior() to run full sampling.")
@@ -1395,12 +1457,20 @@ class model:
         print(f"\nPosterior samples saved to {savename}")
 
 
-    def analyze_posterior_samples(self, beta=1, beta_w=0.02, loading=True, loadname=None, savename=None):
+    def analyze_posterior_samples(self, 
+                                  beta=1, 
+                                  beta_w=0.02, 
+                                  loading=True, 
+                                  loadname=None, 
+                                  savename=None,
+                                  quantile_range=(1, 99)):
         """
         Extract the HMC samples and analyze their properties, including:
         1. Log probability distribution of the samples to understand the posterior landscape.
         2. Percentile-based credible intervals (e.g., 5th and 95th percentiles) to quantify uncertainty in the inferred parameters.
         """
+
+        from src.utilities import low_high_marginal_percentile
         # ── Load samples ──────────────────────────────────────────────────────
 
         if loading:
@@ -1419,37 +1489,28 @@ class model:
         z_samples_np = z_samples.cpu().numpy()           # (N, D) numpy
         num_samples  = z_samples_np.shape[0]
 
-        # # ── Compute log probs directly in z-space ─────────────────────────────
-        # potential = regular_potential(
-        #     V=self.pca_x.components_,
-        #     gmm=self.gmm_prop,
-        #     beta=beta,
-        #     beta_w=beta_w,
-        #     Tpmp=self.pmp,
-        #     Eb_mean=self.X_mean,
-        #     Eb_std=self.X_std,
-        #     dw=self.thawed_fractional_area,
-        #     df=self.frozen_fractional_area,
-        #     Eb_epsilon=self.X_epsilon
-        # )
+        # ── Compute log probs directly in z-space ─────────────────────────────
+        potential = regular_potential(
+            V=self.pca_x.components_,
+            gmm=self.gmm_prop,
+            beta=beta,
+            beta_w=beta_w,
+            Tpmp=self.pmp,
+            Eb_mean=self.X_mean,
+            Eb_std=self.X_std,
+            dw=self.thawed_fractional_area,
+            df=self.frozen_fractional_area,
+            Eb_epsilon=self.X_epsilon
+        )
 
-        # log_probs = []
-        # with torch.no_grad():
-        #     for i in range(num_samples):
-        #         z_i   = z_samples[i].to(torch.float64)
-        #         neg_lp = potential({"z": z_i})
-        #         log_probs.append(-neg_lp.item())         # negate: potential returns -log_prob
+        log_probs = []
+        with torch.no_grad():
+            for i in range(num_samples):
+                z_i   = z_samples[i].to(torch.float64)
+                neg_lp = potential({"z": z_i})
+                log_probs.append(-neg_lp.item())         # negate: potential returns -log_prob
 
-        # log_probs = np.array(log_probs)                  # (N,)
-
-        # # ── Sort by log prob ───────────────────────────────────────────────────
-        # sorted_indices   = np.argsort(log_probs)         # ascending (lowest first)
-        # log_probs_sorted = log_probs[sorted_indices]
-        # z_sorted         = z_samples_np[sorted_indices]  # (N, D)
-
-        # # ── HPD region: top 90% of samples by log prob ────────────────────────
-        # n_keep      = int(0.90 * num_samples)
-        # hpd_z       = z_sorted[-n_keep:]                 # (n_keep, D)
+        log_probs = np.array(log_probs)                  # (N,)
 
         # ── z-space is already PCA latent space → inverse transform to Eb ─────
         hmc_samples = z_samples_np                       # (N, D), no u→z needed
@@ -1499,15 +1560,22 @@ class model:
         self.Tb_std  = np.std(Tb_samples,  axis=0).reshape(self.nx, self.ny)
         self.Tb_mean = np.mean(Tb_samples, axis=0).reshape(self.nx, self.ny)
 
+        low_percentile, high_percentile = quantile_range
+        print(f"Computing {low_percentile}th and {high_percentile}th percentiles for credible intervals...")
+        Tb_plow, Tb_phigh = low_high_marginal_percentile(Tb_samples, low_percentile=low_percentile, high_percentile=high_percentile)
+
+        self.Tb_plow  = Tb_plow.reshape(self.nx, self.ny)
+        self.Tb_phigh = Tb_phigh.reshape(self.nx, self.ny)
+
         # # HPD band: min/max of top-90% samples
         # self.Tb_p5  = Tb_samples[sorted_indices[-n_keep:]].min(axis=0).reshape(self.nx, self.ny)
         # self.Tb_p95 = Tb_samples[sorted_indices[-n_keep:]].max(axis=0).reshape(self.nx, self.ny)
 
-        # # ── Mask outside domain ───────────────────────────────────────────────
-        # self.Tb_p5  [self.domain_mask == False] = np.nan
-        # self.Tb_mean[self.domain_mask == False] = np.nan
-        # self.Tb_p95 [self.domain_mask == False] = np.nan
-        # self.Tb_std [self.domain_mask == False] = np.nan
+        # ── Mask outside domain ───────────────────────────────────────────────
+        self.Tb_plow  [self.domain_mask == False] = np.nan
+        self.Tb_mean[self.domain_mask == False] = np.nan
+        self.Tb_phigh [self.domain_mask == False] = np.nan
+        self.Tb_std [self.domain_mask == False] = np.nan
 
         return
     
