@@ -740,10 +740,14 @@ class model:
         Compute the Maximum A Posteriori
         """
 
-        n_samples = 300
-        X_samples = self.gmm_prop.sample(n_samples)
-        X_samples_mean = np.mean(X_samples, axis=0)
-        init_Eb_ori = X_samples_mean.flatten()
+        # n_samples = 300
+        # X_samples = self.gmm_prop.sample(n_samples)
+        # X_samples_mean = np.mean(X_samples, axis=0)
+        # init_Eb_ori = X_samples_mean.flatten()
+        # print("size of init_Eb_ori:", init_Eb_ori.shape)
+        
+        # just init with random number between -1 and 1
+        init_Eb_ori = np.random.uniform(-1, 1, size=(self.ndim_reduced_x,))
 
         init_Eb_reduced = torch.from_numpy(init_Eb_ori)
         Tpmp = torch.from_numpy(self.pmp).flatten()
