@@ -1,5 +1,3 @@
-import os
-
 from src.amortization import propagate_uncertainty
 from src.utilities import standardize, reverse_standardize
 from src.optimization import log_posterior_gradient, log_posterior, log_posterior_hessian
