@@ -3,11 +3,10 @@ from scipy.sparse.linalg import eigsh, LinearOperator
 from scipy.spatial import cKDTree
 import scipy as sp
 import scipy.io
-from scipy.linalg import pinvh
 import time
 
 from gmr.utils import check_random_state
-from gmr import MVN, GMM, plot_error_ellipses
+from gmr import MVN, GMM
 from gmr.mvn import regression_coefficients
 from gmr.gmm import _safe_probability_density
 
@@ -397,52 +396,52 @@ def propagate_uncertainty(mean_p, covariance_p, gmr_md, indices, X):
     return GMM(n_components=gmr_md.n_components, priors=priors, means=means,
                 covariances=covariances, random_state=gmr_md.random_state)
 
-def to_log_probability_density(gmm, X):
-    """
-    Compute the log probability density for each sample in X.
+# def to_log_probability_density(gmm, X):
+#     """
+#     Compute the log probability density for each sample in X.
     
-    Parameters
-    ----------
-    X : array-like, shape (n_samples, n_features)
-        Data.
+#     Parameters
+#     ----------
+#     X : array-like, shape (n_samples, n_features)
+#         Data.
     
-    Returns
-    -------
-    log_prob : array, shape (n_samples,)
-        Log probability density for each sample.
-    """
-    X = np.atleast_2d(X)
-    n_samples, n_features = X.shape
+#     Returns
+#     -------
+#     log_prob : array, shape (n_samples,)
+#         Log probability density for each sample.
+#     """
+#     X = np.atleast_2d(X)
+#     n_samples, n_features = X.shape
     
-    # Store log probabilities for each component and sample
-    log_prob_components = np.zeros((n_samples, gmm.n_components))
+#     # Store log probabilities for each component and sample
+#     log_prob_components = np.zeros((n_samples, gmm.n_components))
     
-    for k in range(gmm.n_components):
-        mean = gmm.means[k]
-        covariance = gmm.covariances[k]
+#     for k in range(gmm.n_components):
+#         mean = gmm.means[k]
+#         covariance = gmm.covariances[k]
         
-        # Cholesky decomposition
-        try:
-            L = sp.linalg.cholesky(covariance, lower=True)
-        except np.linalg.LinAlgError:
-            L = sp.linalg.cholesky(
-                covariance + 1e-3 * np.eye(n_features), lower=True)
+#         # Cholesky decomposition
+#         try:
+#             L = sp.linalg.cholesky(covariance, lower=True)
+#         except np.linalg.LinAlgError:
+#             L = sp.linalg.cholesky(
+#                 covariance + 1e-3 * np.eye(n_features), lower=True)
         
-        # Log normalization constant: log(1/sqrt((2π)^d * |Σ|))
-        log_det_L = np.sum(np.log(np.diag(L)))  # log|L| = sum(log(L_ii))
-        log_norm = -0.5 * n_features * np.log(2.0 * np.pi) - log_det_L
+#         # Log normalization constant: log(1/sqrt((2π)^d * |Σ|))
+#         log_det_L = np.sum(np.log(np.diag(L)))  # log|L| = sum(log(L_ii))
+#         log_norm = -0.5 * n_features * np.log(2.0 * np.pi) - log_det_L
         
-        # Mahalanobis distance
-        X_minus_mean = X - mean
-        X_normalized = sp.linalg.solve_triangular(
-            L, X_minus_mean.T, lower=True).T
-        log_exponent = -0.5 * np.sum(X_normalized ** 2, axis=1)
+#         # Mahalanobis distance
+#         X_minus_mean = X - mean
+#         X_normalized = sp.linalg.solve_triangular(
+#             L, X_minus_mean.T, lower=True).T
+#         log_exponent = -0.5 * np.sum(X_normalized ** 2, axis=1)
         
-        # Log probability for component k: log(π_k) + log(N(x|μ_k, Σ_k))
-        log_prob_components[:, k] = np.log(gmm.priors[k]) + log_norm + log_exponent
+#         # Log probability for component k: log(π_k) + log(N(x|μ_k, Σ_k))
+#         log_prob_components[:, k] = np.log(gmm.priors[k]) + log_norm + log_exponent
     
-    # Log-sum-exp trick: log(Σ exp(x_i)) = c + log(Σ exp(x_i - c))
-    c = np.max(log_prob_components, axis=1, keepdims=True)
-    log_prob = c.squeeze() + np.log(np.sum(np.exp(log_prob_components - c), axis=1))
+#     # Log-sum-exp trick: log(Σ exp(x_i)) = c + log(Σ exp(x_i - c))
+#     c = np.max(log_prob_components, axis=1, keepdims=True)
+#     log_prob = c.squeeze() + np.log(np.sum(np.exp(log_prob_components - c), axis=1))
     
-    return log_prob
+#     return log_prob

@@ -8,8 +8,8 @@ import signal
 import time
 
 # import my own functions
-from src.optimization import loglikelihood_thawed, loglikelihood_frozen, log_prior
-from src.optimization import loglikelihoods_sum
+from probability import loglikelihood_thawed, loglikelihood_frozen, log_prior
+from probability import loglikelihoods_sum
 from src.ice import compute_pmp, enthalpy_to_temperature
 from src.amortization import to_log_probability_density
 

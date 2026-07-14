@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-from src.optimization import log_posterior, log_posterior_gradient
+from src.probability import log_posterior, log_posterior_gradient
 
 class custom_energy(torch.autograd.Function):
     """

@@ -1,6 +1,6 @@
 from src.amortization import propagate_uncertainty
 from src.utilities import standardize, reverse_standardize
-from src.optimization import log_posterior_gradient, log_posterior, log_posterior_hessian
+from src.probability import log_posterior_gradient, log_posterior, log_posterior_hessian
 from src.ice import enthalpy_to_temperature
 from src.hamiltonianMC import regular_potential
 
@@ -214,41 +214,29 @@ class model:
         def flatten(X):
             return X.reshape((self.nx * self.ny * self.n_channel, -1)).T
 
-        # X_reduced_train = self.pca_x.fit_transform(flatten(X_train))
-        # Y_reduced_train = self.pca_y.fit_transform(flatten(Y_train))
-        # X_reduced_validation = self.pca_x.transform(flatten(X_validation))
-        # Y_reduced_validation = self.pca_y.transform(flatten(Y_validation))
-        # X_reduced_test = self.pca_x.transform(flatten(X_test))
-        # Y_reduced_test = self.pca_y.transform(flatten(Y_test))
-
-        # Fit PCA on the FULL dataset (all splits combined)
-        X_all = np.concatenate([flatten(X_train), flatten(X_validation), flatten(X_test)], axis=0)
-        Y_all = np.concatenate([flatten(Y_train), flatten(Y_validation), flatten(Y_test)], axis=0)
-        self.pca_x.fit(X_all)
-        self.pca_y.fit(Y_all)
-
-        # Then transform each split separately
+        # ✅ DO NOT refit — pca_x and pca_y are already fitted in find_reduction_model_pca
+        # Just transform each split
         X_reduced_train      = self.pca_x.transform(flatten(X_train))
         Y_reduced_train      = self.pca_y.transform(flatten(Y_train))
-        if Y_validation.shape[3] > 0: # if validation set is not empty
+
+        if Y_validation.shape[3] > 0:
             X_reduced_validation = self.pca_x.transform(flatten(X_validation))
             Y_reduced_validation = self.pca_y.transform(flatten(Y_validation))
         else:
             X_reduced_validation = np.empty((0, self.pca_x.n_components_))
             Y_reduced_validation = np.empty((0, self.pca_y.n_components_))
-        X_reduced_test       = self.pca_x.transform(flatten(X_test))
-        Y_reduced_test       = self.pca_y.transform(flatten(Y_test))
 
-        XY_train      = np.hstack((X_reduced_train, Y_reduced_train))
-        XY_validation = np.hstack((X_reduced_validation, Y_reduced_validation))
-        XY_test       = np.hstack((X_reduced_test, Y_reduced_test))
-        self.XY_train = XY_train
-        self.XY_validation = XY_validation
-        self.XY_test = XY_test
+        X_reduced_test = self.pca_x.transform(flatten(X_test))
+        Y_reduced_test = self.pca_y.transform(flatten(Y_test))
 
-        self.n_samples_train = XY_train.shape[0]
-        self.n_samples_validation = XY_validation.shape[0]
-        self.n_samples_test = XY_test.shape[0]
+        # Stack (Y first, then X — matching your index convention)
+        self.XY_train      = np.hstack((Y_reduced_train,      X_reduced_train))
+        self.XY_validation = np.hstack((Y_reduced_validation, X_reduced_validation))
+        self.XY_test       = np.hstack((Y_reduced_test,       X_reduced_test))
+
+        self.n_samples_train      = self.XY_train.shape[0]
+        self.n_samples_validation = self.XY_validation.shape[0]
+        self.n_samples_test       = self.XY_test.shape[0]
 
         print("Shape of XY_train:", self.XY_train.shape)
         print("Shape of XY_validation:", self.XY_validation.shape)
@@ -264,18 +252,18 @@ class model:
         Ytr_flat = flatten(Y_train)
 
         # Stage 1: PCA — fit on train, compress to (n, 50)
-        Xtr_pca = self.pca_x.fit_transform(Xtr_flat)   # (n, 50)
-        Ytr_pca = self.pca_y.fit_transform(Ytr_flat)   # (n, 50)
+        Xtr_pca = self.pca_x.fit_transform(Xtr_flat)   
+        Ytr_pca = self.pca_y.fit_transform(Ytr_flat) 
 
         # Stage 2: PLS — fit on PCA scores, (50, 50) cross-cov is tiny
-        self.pls.fit(Xtr_pca, Ytr_pca)                 # no crash: 50×50 ops
+        self.pls.fit(Xtr_pca, Ytr_pca)                 
 
         # Transform all splits
         def scores(X, Y):
             Xp = self.pca_x.transform(flatten(X))
             Yp = self.pca_y.transform(flatten(Y))
             Xs, Ys = self.pls.transform(Xp, Yp)
-            return np.hstack([Ys, Xs])                 # (Y, X) order
+            return np.hstack([Ys, Xs])                 
 
         self.XY_train      = scores(X_train, Y_train)
         self.XY_validation = scores(X_val,   Y_val)
@@ -290,6 +278,8 @@ class model:
         self.Y_test_ori = flatten(Y_test)   # shape (n_test, nx*ny)
 
         # Should print: (n_train, 24)
+        return 
+    
     def load_obs_data(self, Y_obs, show_plot=True):
         """  
         Load the observation data.
@@ -416,8 +406,8 @@ class model:
         """
         pca_x = PCA(n_components=n_component_x)
         pca_y = PCA(n_components=n_component_y)
-        # self.X_reduced = pca_x.fit_transform(self.X_ori)
-        # self.Y_reduced = pca_y.fit_transform(self.Y_ori)
+        self.X_reduced = pca_x.fit_transform(self.X_ori)
+        self.Y_reduced = pca_y.fit_transform(self.Y_ori)
         self.pca_x = pca_x
         self.pca_y = pca_y
         print("PCA model saved to self.pca_x and self.pca_y.")
@@ -426,7 +416,7 @@ class model:
         self.ndim_reduced_x     = n_component_x
         self.ndim_reduced_y     = n_component_y
 
-        # add x and y indices
+        # add x and y indices: (first y indices, then x indices)
         self.y_indices = np.arange(self.ndim_reduced_y)
         self.x_indices = np.arange(self.ndim_reduced_y, self.ndim_reduced_total)
         return
@@ -497,7 +487,9 @@ class model:
         gmm = GMM(n_components=n_components, random_state=self.random_state)
 
         start_time = time.time()
+
         gmm.from_samples(self.XY_train,R_diff=1e-4)
+
         end_time = time.time()
         training_time = end_time - start_time
         print(f"GMM training completed in {training_time:.2f} seconds.")
@@ -1818,7 +1810,7 @@ class model:
             x_pred_gmm = self.gmm.condition(condition_index, y_test)
 
             # sample from this conditional distribution to get uncertainty
-            n_uq_sample = 400
+            n_uq_sample = 200
             x_uq_samples = x_pred_gmm.sample(n_uq_sample)
             x_uq_samples_ori = np.zeros((self.nx * self.ny, n_uq_sample))
             # Inverse transform to original space
@@ -1844,20 +1836,20 @@ class model:
             # Plotting: five columns: observed Y, True X, predicted X, error (RMSE), uncertainty (stddev)
             plt.figure(figsize=(24, 4))
             plt.subplot(1, 5, 1)
-            plt.imshow(obs_Y, cmap='bwr', vmin=-2, vmax=2)
+            plt.imshow(obs_Y, cmap='RdBu', vmin=-3, vmax=3)
             plt.title('Observed Y')
             plt.colorbar()
             # invert y axis
             plt.gca().invert_yaxis()
 
             plt.subplot(1, 5, 2)
-            plt.imshow(x_test_img, cmap='bwr', vmin=-2, vmax=2)
+            plt.imshow(x_test_img, cmap='RdBu', vmin=-3, vmax=3)
             plt.title('True X')
             plt.colorbar()
             plt.gca().invert_yaxis()
 
             plt.subplot(1, 5, 3)
-            plt.imshow(x_pred_img, cmap='bwr', vmin=-2, vmax=2)
+            plt.imshow(x_pred_img, cmap='RdBu', vmin=-3, vmax=3)
             plt.title('Predicted X')
             plt.colorbar()
             plt.gca().invert_yaxis()
@@ -1878,6 +1870,9 @@ class model:
             plt.suptitle(f'Test Sample {i+1}')
             # save the figure, dpi = 300
             plt.show()
+        return
+
+
     def plot_gmm_samples_pls(self, n_samples=3):
         n_test_samples_plot = n_samples
         rand_idx = np.random.choice(range(self.n_samples_test), size=n_test_samples_plot, replace=False)
@@ -1915,19 +1910,19 @@ class model:
             # --- Plotting (unchanged) ---
             plt.figure(figsize=(24, 4))
             plt.subplot(1, 5, 1)
-            plt.imshow(obs_Y, cmap='bwr', vmin=-2, vmax=2)
+            plt.imshow(obs_Y, cmap='RdBu', vmin=-2, vmax=2)
             plt.title('Observed Y')
             plt.colorbar()
             plt.gca().invert_yaxis()
 
             plt.subplot(1, 5, 2)
-            plt.imshow(x_test_img, cmap='bwr', vmin=-2, vmax=2)
+            plt.imshow(x_test_img, cmap='RdBu', vmin=-2, vmax=2)
             plt.title('True X')
             plt.colorbar()
             plt.gca().invert_yaxis()
 
             plt.subplot(1, 5, 3)
-            plt.imshow(x_pred_img, cmap='bwr', vmin=-2, vmax=2)
+            plt.imshow(x_pred_img, cmap='RdBu', vmin=-2, vmax=2)
             plt.title('Predicted X')
             plt.colorbar()
             plt.gca().invert_yaxis()

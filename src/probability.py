@@ -6,6 +6,60 @@ from src.ice import enthalpy_to_temperature, enthalpy_to_water_fraction
 from src.utilities import reverse_standardize, shape_check
 # import pytorch for AD
 import torch
+import scipy as sp
+
+
+def to_log_probability_density(gmm, X):
+    """
+    Compute the log probability density for each sample in X.
+    
+    Parameters
+    ----------
+    X : array-like, shape (n_samples, n_features)
+        Data.
+    
+    Returns
+    -------
+    log_prob : array, shape (n_samples,)
+        Log probability density for each sample.
+    """
+    X = np.atleast_2d(X)
+    n_samples, n_features = X.shape
+    
+    # Store log probabilities for each component and sample
+    log_prob_components = np.zeros((n_samples, gmm.n_components))
+    
+    for k in range(gmm.n_components):
+        mean = gmm.means[k]
+        covariance = gmm.covariances[k]
+        
+        # Cholesky decomposition
+        try:
+            L = sp.linalg.cholesky(covariance, lower=True)
+        except np.linalg.LinAlgError:
+            L = sp.linalg.cholesky(
+                covariance + 1e-3 * np.eye(n_features), lower=True)
+        
+        # Log normalization constant: log(1/sqrt((2π)^d * |Σ|))
+        log_det_L = np.sum(np.log(np.diag(L)))  # log|L| = sum(log(L_ii))
+        log_norm = -0.5 * n_features * np.log(2.0 * np.pi) - log_det_L
+        
+        # Mahalanobis distance
+        X_minus_mean = X - mean
+        X_normalized = sp.linalg.solve_triangular(
+            L, X_minus_mean.T, lower=True).T
+        log_exponent = -0.5 * np.sum(X_normalized ** 2, axis=1)
+        
+        # Log probability for component k: log(π_k) + log(N(x|μ_k, Σ_k))
+        log_prob_components[:, k] = np.log(gmm.priors[k]) + log_norm + log_exponent
+    
+    # Log-sum-exp trick: log(Σ exp(x_i)) = c + log(Σ exp(x_i - c))
+    c = np.max(log_prob_components, axis=1, keepdims=True)
+    log_prob = c.squeeze() + np.log(np.sum(np.exp(log_prob_components - c), axis=1))
+    
+    return log_prob
+
+
 # functions related to finding Maximum A Posteriori (MAP) in the latent space of a trained GMR model
 def loglikelihood_thawed(beta, Tb, Tpmp, dw):
     """
