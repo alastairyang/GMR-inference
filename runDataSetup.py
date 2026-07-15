@@ -9,8 +9,8 @@ from src.ice import compute_pmp
 from src.utilities import cluster_points, build_masks_from_points
 
 # ---------------- PARAMETERS ----------------
-train_ratio      = 0.9
-validation_ratio = 0
+train_ratio      = 0.8
+validation_ratio = 0.1
 test_ratio       = 0.1
 n_folds          = 10
 
