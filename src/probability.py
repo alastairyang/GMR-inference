@@ -1,7 +1,6 @@
 from tabnanny import verbose
 import numpy as np
 from gmr import MVN
-from src.amortization import to_log_probability_density
 from src.ice import enthalpy_to_temperature, enthalpy_to_water_fraction
 from src.utilities import reverse_standardize, shape_check
 # import pytorch for AD

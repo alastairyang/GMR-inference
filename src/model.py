@@ -1,3 +1,5 @@
+from numpy.random import beta
+
 from src.amortization import propagate_uncertainty
 from src.utilities import standardize, reverse_standardize
 from src.probability import log_posterior_gradient, log_posterior, log_posterior_hessian
@@ -20,6 +22,8 @@ import numpy as np
 import time
 import torch
 import torch.optim as optim
+
+from src.probability import to_log_probability_density
 
 class model:
     """ Latent space Bayesian inference model for ice sheet basal temperature estimation
@@ -118,6 +122,7 @@ class model:
         self.ndim_ori = self.nx * self.ny * self.n_channel
         self.n_channel = X.shape[2]
         self.n_samples_total = X.shape[3]
+        colormap = 'RdBu'
 
         if show_plot:
             random_indices = np.random.choice(self.n_samples_total, size=5, replace=False)
@@ -128,7 +133,7 @@ class model:
                 X_plot = X[:, :, :, idx].copy()
                 if domain_mask is not None:
                     X_plot[domain_mask == False] = np.nan # set the values outside the model boundary to NaN for better visualization
-                plt.imshow(X_plot, cmap='viridis', vmin = -2, vmax = 2)
+                plt.imshow(X_plot, cmap=colormap, vmin = -2, vmax = 2)
                 plt.gca().invert_yaxis()
                 plt.gca().axis('off')
                 plt.title(f'X Sample {idx}')
@@ -139,7 +144,7 @@ class model:
                 if domain_mask is not None:
                     Y_plot[domain_mask == False] = np.nan
                 
-                plt.imshow(Y_plot, cmap='viridis', vmin=-2, vmax=2)
+                plt.imshow(Y_plot, cmap=colormap, vmin=-2, vmax=2)
                 plt.gca().invert_yaxis()
                 plt.gca().axis('off')
                 plt.title(f'Y Sample {idx}')
@@ -496,7 +501,7 @@ class model:
         self.gmm = gmm
         return 
     
-    def derive_prior(self, beta=0.1, lambda1=1, lambda2=1, show_plot=True):
+    def derive_prior(self, sigma_obs=0.1, lambda1=1, lambda2=1, show_plot=True):
         """
         Derive the prior P(X) -- under Y_obs -- from the joint P(X,Y)
         This involves two steps:
@@ -508,15 +513,15 @@ class model:
         
         Parameters
         ----------
-        beta: float
-            Prefactor in the objective function 
+        sigma_obs: float
+            The observational uncertainty (std) in the standardized space
         lambda1: float
             weight for data residual term in the covariance estimation
         lambda2: float
             weight for Y variance from simulation in the covariance estimation
         """
         # find mean and covariance
-        z_optimal, residual_latent, residual_recon, residual = self.compute_optimal_Y_in_latent(beta=beta,show_plot=show_plot)
+        z_optimal, residual_latent, _, _ = self.compute_optimal_Y_in_latent(sigma_obs=sigma_obs, show_plot=show_plot)
 
         residual_latent = residual_latent.reshape(-1, 1)  # shape (ndim_reduced_y, 1)
         residual_latent_outer = residual_latent @ residual_latent.T  # shape (ndim_reduced_y, ndim_reduced_y)
@@ -542,6 +547,7 @@ class model:
         self.gmm_prop = gmm_propagated
 
         if show_plot:
+            colormap = 'RdBu_r'
             # sample from gmm_propagated to get the distribution of X
             n_samples = 300
             X_samples = gmm_propagated.sample(n_samples)
@@ -562,99 +568,143 @@ class model:
                 X_samples_unprop_ori[:,i] = self.pca_x.inverse_transform(sample)
 
 
-            plt.figure(figsize=(10, 10))
+            plt.figure(figsize=(10, 16))
 
             X_samples_mean_unprop = np.mean(X_samples_unprop_ori, axis=1).reshape(self.nx, self.ny)
             X_samples_std_unprop = np.std(X_samples_unprop_ori, axis=1).reshape(self.nx, self.ny)
             X_samples_mean_unprop[self.domain_mask == False] = np.nan
             X_samples_std_unprop[self.domain_mask == False] = np.nan
             plt.subplot(3, 2, 1)
-            plt.imshow(X_samples_mean_unprop, cmap='bwr', vmin=-5, vmax=5)
+            plt.imshow(X_samples_mean_unprop, 
+                       extent=self.extent, origin='lower',
+                       cmap=colormap, vmin=-5, vmax=5)
+            plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2, label='Domain Boundary')
             plt.title('Mean of $E_b$ (Unpropagated)')
+            plt.xlabel('X (km)')
+            plt.ylabel('Y (km)')
+            plt.xticks(rotation=45)
             plt.colorbar()
-            plt.gca().invert_yaxis()
             plt.subplot(3, 2, 2)
-            plt.imshow(X_samples_std_unprop, cmap='hot', vmin=0, vmax=3)
+            plt.imshow(X_samples_std_unprop, 
+                       extent=self.extent, origin='lower',
+                       cmap='hot', vmin=0, vmax=3)
+            plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2, label='Domain Boundary')
             plt.title('Std of $E_b$ (Unpropagated)')
+            plt.xlabel('X (km)')
+            plt.ylabel('Y (km)')
+            plt.xticks(rotation=45)
             plt.colorbar()
-            plt.gca().invert_yaxis()
 
             X_samples_mean_prop = np.mean(X_samples_prop_ori, axis=1).reshape(self.nx, self.ny)
             X_samples_std_prop = np.std(X_samples_prop_ori, axis=1).reshape(self.nx, self.ny)
             X_samples_mean_prop[self.domain_mask == False] = np.nan
             X_samples_std_prop[self.domain_mask == False] = np.nan
             plt.subplot(3, 2, 3)
-            plt.imshow(X_samples_mean_prop, cmap='bwr', vmin=-5, vmax=5)
+            plt.imshow(X_samples_mean_prop, 
+                       extent=self.extent, origin='lower',
+                       cmap=colormap, vmin=-5, vmax=5)
+            plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2, label='Domain Boundary')
             plt.title('Mean of $E_b$ (Obs. propagated)')
+            plt.xlabel('X (km)')
+            plt.ylabel('Y (km)')
+            plt.xticks(rotation=45)
             plt.colorbar()
-            plt.gca().invert_yaxis()
             plt.subplot(3, 2, 4)
-            plt.imshow(X_samples_std_prop, cmap='hot', vmin=0, vmax=3)
+            plt.imshow(X_samples_std_prop, 
+                       extent=self.extent, origin='lower',
+                       cmap='hot', vmin=0, vmax=3)
+            plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2, label='Domain Boundary')
             plt.title('Std of $E_b$ (Obs. propagated)')
+            plt.xlabel('X (km)')
+            plt.ylabel('Y (km)')
+            plt.xticks(rotation=45)
             plt.colorbar()
-            plt.gca().invert_yaxis()
 
             # plt those two on a histogram
             plt.subplot(3, 2, 5)
             plt.hist(X_samples_mean_unprop[self.domain_mask].flatten(), bins=50, color='blue', alpha=0.7, label='Unpropagated')
             plt.hist(X_samples_mean_prop[self.domain_mask].flatten(), bins=50, color='red', alpha=0.7, label='Propagated')
             plt.legend()
-            
+            plt.xlabel('Mean of $E_b$')
+            plt.ylabel('Frequency')
             # plot two std on a histogram
             plt.subplot(3, 2, 6)
             plt.hist(X_samples_std_unprop[self.domain_mask].flatten(), bins=50, color='blue', alpha=0.7, label='Unpropagated')  
             plt.hist(X_samples_std_prop[self.domain_mask].flatten(), bins=50, color='red', alpha=0.7, label='Propagated')   
             plt.legend()
+            plt.xlabel('Std of $E_b$')
+            plt.ylabel('Frequency')
             plt.savefig('../figs/propagation_effect.png', dpi=300)
 
             plt.show()
         return 
 
-    def compute_optimal_Y_in_latent(self, beta=0.1, show_plot=True):
+    def compute_optimal_Y_in_latent(self, sigma_obs=0.1, show_plot=True):
         """  
         Solve the optimization problem with regularization to find the optimal Y in the latent space
 
         Parameters 
         ----------
-            beta: float
+            sigma_obs: float
+                The observational uncertainty (std) in the standardized space
 
         """
-        def objective_scaled(z_scaled, Y_obs, V, beta):
-            """Objective in scaled z space — avoids scaler transform inside loop."""
-            z_orig = scaler.inverse_transform(z_scaled.reshape(1, -1)).flatten()
+        def objective_scaled(z, Y_obs, V, sigma_obs, ndim):
+            """Objective in scaled z space — avoids scaler transform inside loop.
+            
+            Parameters
+            ----------
+            z: ndarray of shape (n_feature_latent,)
+                The latent variable
+            Y_obs: ndarray of shape (n_feature_obs,)
+                The observed variable
+            V: ndarray of shape (n_feature_latent, n_feature_obs)
+                The PCA components for Y
+            sigma_obs: float
+                The observational uncertainty (std) in the standardized space
+            ndim: int
+                The number of observed pixels (i.e. sum of the flight mask)
+            """
+            # z_orig = scaler.inverse_transform(z_scaled.reshape(1, -1)).flatten()
             
             # Likelihood term (in original space)
-            residual = Y_obs - z_orig @ V
-            likelihood_term = np.mean(residual**2)
+            residual = Y_obs - z @ V
+            likelihood_term = np.sum(residual**2)
+
+            # gaussian scaling term
+            log_gauss_scale = (ndim/2) * np.log(2 * np.pi * sigma_obs**2)
             
-            # Prior term (directly in scaled space — no transform needed)
-            density = gmm_latent.to_probability_density(z_scaled.reshape(1, -1))
-            if density <= 0:
-                prior_term = 1e6
-            else:
-                prior_term = -np.log(float(density))
-            print(f" Likelihood: {likelihood_term/beta:.3f}, Prior: {prior_term:.3f}")
-            return likelihood_term / beta + prior_term
-        def gradient_scaled(z_scaled, Y_obs, V, beta):
-            # --- Likelihood gradient (analytical) ---
-            z_orig = scaler.inverse_transform(z_scaled.reshape(1, -1)).flatten()
-            residual = Y_obs - z_orig @ V
-            grad_lik_orig = -2 * (residual @ V.T) / len(Y_obs)
-            grad_lik_scaled = grad_lik_orig * scaler.scale_
+            # Prior term
+            neg_density = -1 * to_log_probability_density(gmm_latent, z.reshape(1, -1))[0]
+
+            print(f" Log likelihood: {likelihood_term/sigma_obs**2:.3f}, \
+                     Log gaussian scale: {log_gauss_scale:.3f}, \
+                     Log prior (GMM): {neg_density:.3f}")
+            return likelihood_term / (2*sigma_obs**2) + log_gauss_scale + neg_density
+        
+        def gradient_scaled(z, Y_obs, V, sigma_obs, ndim):
+            """  
+            Gradient of the log posterior
+            """
+            # --- Likelihood gradient ---
+            residual = Y_obs - z @ V
+            grad_lik_orig = -residual @ V.T
 
             # --- Prior gradient (central differences) ---
             eps = 1e-4
-            grad_prior = np.zeros_like(z_scaled)
-            for i in range(len(z_scaled)):
-                z_plus = z_scaled.copy();  z_plus[i] += eps
-                z_minus = z_scaled.copy(); z_minus[i] -= eps
-                f_plus  = -np.log(float(gmm_latent.to_probability_density(z_plus.reshape(1,-1)))  + 1e-300)
-                f_minus = -np.log(float(gmm_latent.to_probability_density(z_minus.reshape(1,-1))) + 1e-300)
+            grad_prior = np.zeros_like(z)
+            for i in range(len(z)):
+                z_plus = z.copy();  z_plus[i] += eps
+                z_minus = z.copy(); z_minus[i] -= eps
+                f_plus  = -to_log_probability_density(gmm_latent, z_plus.reshape(1,-1))[0]
+                f_minus = -to_log_probability_density(gmm_latent, z_minus.reshape(1,-1))[0]
                 grad_prior[i] = (f_plus - f_minus) / (2 * eps)
 
-            return grad_lik_scaled / beta + grad_prior
+            return grad_lik_orig / sigma_obs**2 + grad_prior
 
-        gmm_latent = GMM(n_components=2, random_state=np.random.RandomState(42))
+        # first get a GMM-based prior
+        gmm_latent = GMM(n_components=3, random_state=np.random.RandomState(42))
+
         y_latent_all = self.pca_y.transform(self.Y_ori)
 
         n_latent_samples = y_latent_all.shape[0]
@@ -663,35 +713,27 @@ class model:
         local_rng.shuffle(indices)
 
         split_point = int(0.8 * n_latent_samples)
-        train_indices = indices[:split_point]
-        test_indices = indices[split_point:]
+        train_indices  = indices[:split_point]
+        test_indices   = indices[split_point:]
         y_latent_train = y_latent_all[train_indices]
-        y_latent_test = y_latent_all[test_indices]
-        scaler = StandardScaler()
-        y_latent_train_scaled = scaler.fit_transform(y_latent_train)
-        y_latent_test_scaled  = scaler.transform(y_latent_test)
-        # train
-        gmm_latent.from_samples(y_latent_train_scaled)
+        y_latent_test  = y_latent_all[test_indices]
+
+        gmm_latent.from_samples(y_latent_train)
 
         # initial state for the optimization 
         best_k = np.argmax(gmm_latent.priors)
         z_init_scaled = gmm_latent.means[best_k].copy()
         print(f"Density at init: {gmm_latent.to_probability_density(z_init_scaled.reshape(1,-1))}")
 
-        # Bounds in scaled space: ±5 std (which is just ±5 since data is standardized)
-        lb_scaled = np.full(self.ndim_reduced_y, -5.0)
-        ub_scaled = np.full(self.ndim_reduced_y,  5.0)
+        # total pixel count (no. observations)
+        ndim = np.sum(self.flight_mask)
 
         result = minimize(objective_scaled, z_init_scaled,
-                  args=(self.Y_obs_ori.flatten(), self.pca_y.components_, beta),
+                  args=(self.Y_obs_ori.flatten(), self.pca_y.components_, sigma_obs, ndim),
                   jac=gradient_scaled,
-                  method='L-BFGS-B',
-                  bounds=Bounds(lb_scaled, ub_scaled))
+                  method='L-BFGS-B')
 
-        # Convert optimal back to original space
-        z_optimal_scaled = result.x
-        z_optimal = scaler.inverse_transform(z_optimal_scaled.reshape(1, -1)).flatten()
-        print("Optimization success:", result.success)
+        z_optimal = result.x
 
         print(result.message)
         print(f"Iterations: {result.nit}")
@@ -700,28 +742,54 @@ class model:
 
         Y_obs_reconstructed_optimal = z_optimal @ self.pca_y.components_
         Y_obs_reconstructed_optimal_img = Y_obs_reconstructed_optimal.reshape(self.nx, self.ny)
-        residual = self.Y_obs_ori.flatten() - Y_obs_reconstructed_optimal
+        residual = self.Y_obs_ori - Y_obs_reconstructed_optimal
         residual_latent = self.pca_y.transform(residual.reshape(1, -1)).flatten()
         residual_recon = self.pca_y.inverse_transform(residual_latent.reshape(1, -1)).reshape(self.nx, self.ny)
+        residual = residual.reshape(self.nx, self.ny)
 
         if show_plot:
-            plt.figure(figsize=(20, 6))
-            plt.subplot(1,3,1)
-            plt.imshow(Y_obs_reconstructed_optimal_img, cmap='bwr', vmin=-2, vmax=2)
-            plt.title('Reconstructed Observed Y from Optimized Latent z')
+            colormap = 'RdBu_r'
+            plt.figure(figsize=(28, 6))
+            plt.subplot(1,4,1)
+            plt.imshow(Y_obs_reconstructed_optimal_img, 
+                       extent=self.extent, origin='lower', 
+                       cmap=colormap, vmin=-2, vmax=2)
+            plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2)
+            plt.title('Reconstructed Observed Y \n from Optimized Latent z')
+            plt.xlabel('X (km)')
+            # tilt x ticks by 45 degrees
+            plt.xticks(rotation=45)
+            plt.ylabel('Y (km)')
             plt.colorbar()
-            plt.gca().invert_yaxis()
-            plt.subplot(1,3,2)
-            plt.imshow(self.Y_obs_ori.reshape(self.nx, self.ny), cmap='bwr', vmin=-2, vmax=2)
+            plt.subplot(1,4,2)
+            plt.imshow(self.Y_obs_ori.reshape(self.nx, self.ny), 
+                       extent=self.extent, origin='lower', 
+                       cmap=colormap, vmin=-2, vmax=2)
+            plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2)
             plt.title('Original Mean of Observed Y')
+            plt.xlabel('X (km)')
+            plt.xticks(rotation=45)
             plt.colorbar()
-            plt.gca().invert_yaxis()
             # projecting the residue to PCA space and show the reconstruction
-            plt.subplot(1,3,3)
-            plt.imshow(residual_recon, cmap='bwr', vmin=-2, vmax=2)
-            plt.title('PCA Reconstruction of Residual')
+            plt.subplot(1,4,3)
+            plt.imshow(residual, 
+                       extent=self.extent, origin='lower', 
+                       cmap=colormap, vmin=-2, vmax=2)
+            plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2)
+            plt.title('Residual')
+            plt.xlabel('X (km)')
+            plt.xticks(rotation=45)
             plt.colorbar()
-            plt.gca().invert_yaxis()
+            plt.subplot(1,4,4)
+            residual_recon_95p = np.percentile(np.abs(residual_recon), 95)
+            plt.imshow(residual_recon, 
+                       extent=self.extent, origin='lower', 
+                       cmap=colormap, vmin=-residual_recon_95p, vmax=residual_recon_95p)
+            plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2)
+            plt.title('PCA Reconstruction of Residual')
+            plt.xlabel('X (km)')
+            plt.xticks(rotation=45)
+            plt.colorbar()
             plt.show()
         return z_optimal, residual_latent, residual_recon, residual
     

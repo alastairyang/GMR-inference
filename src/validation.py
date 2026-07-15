@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from src.amortization import to_log_probability_density
+from src.probability import to_log_probability_density
 
 def bayesian_information_criterion(model, X_validate, Y_validate, n):
     """   
