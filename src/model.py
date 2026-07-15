@@ -1833,19 +1833,21 @@ class model:
         Y_recon = pca_y.inverse_transform(pca_y.transform(self.Y_ori))
 
         # visualize three random samples
+        colormap_1 = 'RdBu_r'
+        colormap_2 = 'bwr'
         random_indices = np.random.choice(self.n_samples_total, size=3, replace=False)
         plt.figure(figsize=(10, 8))
         for i, idx in enumerate(random_indices):
             X_sample = self.X_ori[idx].reshape(self.nx, self.ny, self.n_channel)
             plt.subplot(3, 3, i + 1)
-            plt.imshow(X_sample, cmap='viridis', vmin = -2, vmax = 2)
+            plt.imshow(X_sample, cmap=colormap_1, vmin = -2, vmax = 2)
             plt.title(f'X Sample {idx}')
             plt.gca().invert_yaxis()
             plt.colorbar()
         for i, idx in enumerate(random_indices):
             X_recon_sample = X_recon[idx].reshape(self.nx, self.ny, self.n_channel)
             plt.subplot(3, 3, i + 4)
-            plt.imshow(X_recon_sample, cmap='viridis', vmin = -2, vmax = 2)
+            plt.imshow(X_recon_sample, cmap=colormap_1, vmin = -2, vmax = 2)
             plt.title(f'Reconstructed X {idx}')
             plt.gca().invert_yaxis()
             plt.colorbar()
@@ -1855,7 +1857,7 @@ class model:
             X_sample = self.X_ori[idx].reshape(self.nx, self.ny, self.n_channel)
             X_recon_sample = X_recon[idx].reshape(self.nx, self.ny, self.n_channel)
             residue = X_sample - X_recon_sample
-            plt.imshow(residue[:, :, 0], cmap='bwr', vmin = -2, vmax = 2)
+            plt.imshow(residue[:, :, 0], cmap=colormap_2, vmin = -2, vmax = 2)
             plt.title(f'X difference {idx}')
             plt.gca().invert_yaxis()
             plt.colorbar()
@@ -1865,14 +1867,14 @@ class model:
         for i, idx in enumerate(random_indices):
             Y_sample = self.Y_ori[idx].reshape(self.nx, self.ny, self.n_channel)
             plt.subplot(3, 3, i + 1)
-            plt.imshow(Y_sample, cmap='viridis', vmin = -2, vmax = 2)
+            plt.imshow(Y_sample, cmap=colormap_1, vmin = -2, vmax = 2)
             plt.title(f'Y Sample {idx}')
             plt.gca().invert_yaxis()
             plt.colorbar()
         for i, idx in enumerate(random_indices):
             Y_recon_sample = Y_recon[idx].reshape(self.nx, self.ny, self.n_channel)
             plt.subplot(3, 3, i + 4)
-            plt.imshow(Y_recon_sample, cmap='viridis', vmin = -2, vmax = 2)
+            plt.imshow(Y_recon_sample, cmap=colormap_1, vmin = -2, vmax = 2)
             plt.title(f'Reconstructed Y {idx}')
             plt.gca().invert_yaxis()
             plt.colorbar()
@@ -1882,7 +1884,7 @@ class model:
             Y_sample = self.Y_ori[idx].reshape(self.nx, self.ny, self.n_channel)
             Y_recon_sample = Y_recon[idx].reshape(self.nx, self.ny, self.n_channel)
             residue = Y_sample - Y_recon_sample
-            plt.imshow(residue[:, :, 0], cmap='bwr', vmin = -2, vmax = 2)
+            plt.imshow(residue[:, :, 0], cmap=colormap_2, vmin = -2, vmax = 2)
             plt.title(f'Y difference {idx}')
             plt.gca().invert_yaxis()
             plt.colorbar()
