@@ -98,7 +98,7 @@ class Plotting:
     def _plot_main_stack(self, data, background):
         assert len(data) == 3, "'main+stack' layout requires exactly 3 panels in data."
 
-        fig = plt.figure(figsize=(12, 8))
+        fig = plt.figure(figsize=(13, 8))
 
         gs = fig.add_gridspec(
             2, 2,
@@ -127,6 +127,10 @@ class Plotting:
 
         self._add_background_colorbar(fig, ax_main, background)
 
+        ax_main.set_label('main')
+        ax_top.set_label('top')
+        ax_bottom.set_label('bottom')
+
         return fig
 
     # private: render a single panel (imshow + colorbar + contour)
@@ -149,7 +153,7 @@ class Plotting:
 
         if d.get('contour_data') is not None:
             x, y = np.meshgrid(d['x'], d['y'])
-            ax.contour(
+            cs = ax.contour(
                 x, y, d['contour_data'],
                 levels=d.get('contour_levels'),
                 colors=d.get('contour_colors', 'white'),
@@ -157,6 +161,19 @@ class Plotting:
                 transform=self.data_crs,
                 zorder=2
             )
+
+        #  Inline labels — controlled by 'contour_labels' key
+            if d.get('contour_labels', False):
+                ax.clabel(
+                    cs,
+                    levels=d.get('contour_levels'),
+                    inline=True,
+                    inline_spacing=d.get('contour_label_spacing', 5),
+                    fontsize=d.get('contour_label_fontsize', 7),
+                    fmt=d.get('contour_label_fmt', '%g'),
+                    colors=d.get('contour_colors', 'white'),
+                    zorder=3
+                )
 
     def _setup_ax(self, ax, background):
 
