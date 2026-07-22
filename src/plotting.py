@@ -24,12 +24,15 @@ class Plotting:
         return 
     
     def define_extent(self, x, y):
-        self.x_min, self.x_max = np.min(x), np.max(x)
-        self.y_min, self.y_max = np.min(y), np.max(y)
+        dx = x[1] - x[0]
+        dy = y[1] - y[0]
+        self.x_min = np.min(x) - dx / 2
+        self.x_max = np.max(x) + dx / 2
+        self.y_min = np.min(y) - dy / 2
+        self.y_max = np.max(y) + dy / 2
         self.x = x
         self.y = y
-        return 
-    
+
     def make_consistent(self, data_dict):
         """
         Check coordinate. If not consistent, interpolate
@@ -183,14 +186,14 @@ class Plotting:
         gl = ax.gridlines(
             crs=ccrs.PlateCarree(),
             draw_labels=True,
-            linewidth=1, color='grey', alpha=0.8, linestyle='--', zorder=5
+            linewidth=1, color='black', alpha=0.8, linestyle='--', zorder=5
         )
         gl.top_labels   = False
         gl.right_labels = False
-        gl.xlabel_style = {'size': 10, 'color': 'white'}
-        gl.ylabel_style = {'size': 10, 'color': 'white'}
-        gl.xlocator   = plt.FixedLocator(range(-180, 181, 30))
-        gl.ylocator   = plt.FixedLocator(range(-90, -59, 5))
+        gl.xlabel_style = {'size': 10, 'color': 'black'}
+        gl.ylabel_style = {'size': 10, 'color': 'black'}
+        gl.xlocator   = plt.FixedLocator(range(-180, 181, 20))
+        gl.ylocator   = plt.FixedLocator(range(-90, -59, 3))
         gl.xformatter = LONGITUDE_FORMATTER
         gl.yformatter = LATITUDE_FORMATTER
 
