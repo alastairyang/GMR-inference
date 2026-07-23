@@ -1,8 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 from rasterio.transform import xy
 from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
+import shapely.geometry as sgeom
 import cartopy.feature as cfeature
 import cartopy.crs as ccrs
 import scipy.io as sio
@@ -35,13 +35,16 @@ class Plotting:
 
     def make_consistent(self, data_dict):
         """
-        Check coordinate. If not consistent, interpolate
+        Check coordinate. If not consistent, interpolate.
+        Scatter panels are passed through unchanged.
 
         data_dict: dict with keys 'x', 'y', 'data'
         """
+        if data_dict.get('data_type') == 'scatter':
+            return data_dict  # point cloud — skip grid interpolation entirely
+
         x, y = data_dict['x'], data_dict['y']
         if not (np.array_equal(x, self.x) and np.array_equal(y, self.y)):
-            # interpolate to the common grid
             print("Interpolating data to the common grid...")
             interpolator = RegularGridInterpolator((y, x), data_dict['data'])
             X, Y = np.meshgrid(self.x, self.y)
@@ -50,6 +53,7 @@ class Plotting:
             data_dict['x'] = self.x
             data_dict['y'] = self.y
         return data_dict
+
 
     def plot(self, data, background, layout='row'):
         """
@@ -91,6 +95,7 @@ class Plotting:
         for ax, d in zip(axes, data):
             d = self.make_consistent(d)
             self._setup_ax(ax, background)
+            self._add_lon_labels(ax, lons=[-120, -100, -140])
             self._add_scalebar(ax, length_km=200, n_segments=2)
             self._plot_panel(fig, ax, d)
 
@@ -125,6 +130,7 @@ class Plotting:
         for ax, d, sb_km, sb_seg in panels:
             d = self.make_consistent(d)
             self._setup_ax(ax, background)
+            self._add_lon_labels(ax, lons=[-120, -100, -140])
             self._add_scalebar(ax, length_km=sb_km, n_segments=sb_seg)
             self._plot_panel(fig, ax, d)
 
@@ -135,9 +141,20 @@ class Plotting:
         ax_bottom.set_label('bottom')
 
         return fig
-
-    # private: render a single panel (imshow + colorbar + contour)
     def _plot_panel(self, fig, ax, d):
+        data_type = d.get('data_type', 'pcolor')
+
+        if data_type == 'scatter':
+            self._plot_panel_scatter(fig, ax, d)
+        elif data_type == 'line':
+            self._plot_panel_line(fig, ax, d)
+        elif data_type == 'pcolor':
+            self._plot_panel_pcolor(fig, ax, d)
+        else:
+            raise ValueError(f"Unknown data_type: '{data_type}'")
+
+
+    def _plot_panel_image(self, fig, ax, d):
         im = ax.imshow(
             d['data'],
             origin='lower',
@@ -165,7 +182,6 @@ class Plotting:
                 zorder=2
             )
 
-        #  Inline labels — controlled by 'contour_labels' key
             if d.get('contour_labels', False):
                 ax.clabel(
                     cs,
@@ -177,6 +193,111 @@ class Plotting:
                     colors=d.get('contour_colors', 'white'),
                     zorder=3
                 )
+
+    def _plot_panel_line(self, fig, ax, d):
+        LINE_KEYS = ('linewidth', 'linestyle', 'alpha', 'zorder', 'color')
+
+        # ── Multi-layer mode ─────────────────────────────────────────────────
+        if 'layers' in d:
+            for layer in d['layers']:
+                self._draw_line_layer(ax, layer)
+
+        # ── Single-layer mode ────────────────────────────────────────────────
+        else:
+            self._draw_line_layer(ax, d)
+
+        ax.set_title(d.get('title', ''), fontsize=10)
+        ax.set_aspect('equal')
+
+
+    def _draw_line_layer(self, ax, d):
+        """Draw a single line layer onto ax."""
+        LINE_KEYS = ('linewidth', 'linestyle', 'alpha', 'zorder', 'color', 'label')
+        kw = {k: d[k] for k in LINE_KEYS if k in d}
+
+        kw.setdefault('linewidth', 1.0)
+        kw.setdefault('linestyle', '-')
+        kw.setdefault('alpha',     1.0)
+        kw.setdefault('zorder',    3)
+        kw.setdefault('color',     'black')
+
+        x_pts = np.asarray(d['x'])
+        y_pts = np.asarray(d['y'])
+
+        # Support for multiple separate lines via NaN separators
+        # e.g. x = [x1, x2, nan, x3, x4] draws two separate segments
+        ax.plot(x_pts, y_pts,
+                transform=self.data_crs,
+                **kw)
+
+    def _plot_panel_scatter(self, fig, ax, d):
+        SCATTER_KEYS = ('s', 'marker', 'alpha', 'linewidths', 'zorder')
+
+        def _draw_layer(layer_d, zorder_offset=0):
+            kw = {k: layer_d[k] for k in SCATTER_KEYS if k in layer_d}
+            kw.setdefault('s', 10)
+            kw.setdefault('marker', 'o')
+            kw.setdefault('alpha', 0.8)
+            kw.setdefault('linewidths', 0.4)
+            kw.setdefault('zorder', 2 + zorder_offset)
+
+            x_pts = np.asarray(layer_d['x'])
+            y_pts = np.asarray(layer_d['y'])
+
+            if layer_d.get('facecolors') == 'none':
+                # Hollow circles — no colormap
+                ax.scatter(
+                    x_pts, y_pts,
+                    facecolors='none',
+                    edgecolors=layer_d.get('edgecolors', 'black'),
+                    transform=self.data_crs,
+                    **kw
+                )
+                return None  
+
+            # elseif 'data' exist
+            elif 'data' in layer_d:
+                # Colour-mapped fill
+                values = np.asarray(layer_d['data'])
+                sc = ax.scatter(
+                    x_pts, y_pts,
+                    c=values,
+                    cmap=layer_d.get('cmap', 'viridis'),
+                    vmin=layer_d.get('vmin'),
+                    vmax=layer_d.get('vmax'),
+                    edgecolors=layer_d.get('edgecolors', 'none'),
+                    transform=self.data_crs,
+                    **kw
+                )
+                return sc  # caller handles colorbar
+            else:
+                # Fallback: solid fill with facecolor
+                ax.scatter(
+                    x_pts, y_pts,
+                    facecolors=layer_d.get('facecolors', 'blue'),
+                    edgecolors=layer_d.get('edgecolors', 'none'),
+                    transform=self.data_crs,
+                    **kw
+                )
+                return None
+
+        # ── Multi-layer mode ─────────────────────────────────────────────────
+        if 'layers' in d:
+            for i, layer in enumerate(d['layers']):
+                sc = _draw_layer(layer, zorder_offset=i)
+                if sc is not None and d.get('colorbar', 'on') != 'off':
+                    fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.04,
+                                label=layer.get('cb_label', d.get('cb_label', '')))
+
+        # ── Single-layer mode (existing behaviour) ───────────────────────────
+        else:
+            sc = _draw_layer(d)
+            if sc is not None and d.get('colorbar', 'on') != 'off':
+                fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.04,
+                            label=d.get('cb_label', ''))
+
+        ax.set_title(d.get('title'), fontsize=10)
+        ax.set_aspect('equal')
 
     def _setup_ax(self, ax, background):
 
@@ -197,6 +318,20 @@ class Plotting:
         gl.xformatter = LONGITUDE_FORMATTER
         gl.yformatter = LATITUDE_FORMATTER
 
+        gl.xlabel_style = {
+            'size': 10,
+            'color': 'black',
+            'rotation': 0,
+            'ha': 'center',
+            'va': 'top',
+        }
+        gl.bottom_labels = False   # ← must come AFTER gl = ax.gridlines(...)
+        gl.top_labels    = False
+        gl.right_labels  = False
+        gl.left_labels   = True
+
+
+
         # shared background
         ax.imshow(
             background['data'],
@@ -207,7 +342,42 @@ class Plotting:
         )
 
         return gl
-        
+
+    def _add_lon_labels(self, ax, lons):
+        """Place longitude labels where gridlines exit through bottom or right boundary."""
+        for lon in lons:
+            pts = [self.data_crs.transform_point(lon, lat, ccrs.PlateCarree())
+                for lat in np.linspace(-90, -60, 300)]
+
+            # Keep only points inside the plot extent
+            pts = [(x, y) for x, y in pts
+                if self.x_min <= x <= self.x_max and self.y_min <= y <= self.y_max]
+
+            if not pts:
+                continue
+
+            # Prefer the point closest to the bottom edge
+            # For lines exiting right, fall back to rightmost point
+            bottom_pts = [(x, y) for x, y in pts
+                        if abs(y - self.y_min) < (self.y_max - self.y_min) * 0.15]
+            right_pts  = [(x, y) for x, y in pts
+                        if abs(x - self.x_max) < (self.x_max - self.x_min) * 0.15]
+
+            if bottom_pts:
+                lx, ly = min(bottom_pts, key=lambda p: p[1])   # lowest y = closest to bottom
+                ha, va = 'center', 'top'
+            elif right_pts:
+                lx, ly = max(right_pts, key=lambda p: p[0])    # rightmost x
+                ha, va = 'left', 'center'
+            else:
+                lx, ly = pts[-1]
+                ha, va = 'center', 'top'
+
+            label = f"{abs(lon)}°{'W' if lon < 0 else 'E'}"
+            ax.text(lx, ly, label,
+                    transform=self.data_crs,
+                    fontsize=10, ha=ha, va=va, zorder=6)
+
     def _add_scalebar(self, ax, length_km=200, n_segments=4, location=(0.08, 0.06), bar_height_frac=0.008):
         """
         Add a classic alternating black/white segmented scale bar.

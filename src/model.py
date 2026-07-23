@@ -164,6 +164,7 @@ class model:
         self.domain_bound_line = (domain_bound_line[0], corrected_y)
 
         return 
+    
     def _get_domain_outline(self, mask):
         """
         Extract the outline of a boolean domain mask as x, y coordinates.

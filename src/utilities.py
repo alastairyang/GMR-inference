@@ -547,5 +547,27 @@ def load_ase_datasets(verbose=True):
     out['mask'] = mask
     # no need to interpolate; domain mask was saved with coord
 
+    # get the domain outline from domain outline
+    ny, nx = mask.shape
+
+    # Use contour at level 0.5 to find the boolean boundary
+    fig_tmp, ax_tmp = plt.subplots()
+    cs = ax_tmp.contour(X, Y, mask.astype(float), levels=[0.5])
+    plt.close(fig_tmp)  # don't display the temp figure
+
+    segments = []
+    for path in cs.collections[0].get_paths():
+        verts = path.vertices
+        segments.append((verts[:, 0], verts[:, 1]))
+            
+    domain_bound_line = segments[0]
+    # flip y wrt to the midpoint of the domain extent to allow origin='upper' in imshow
+    extent = np.array([xs.min(), xs.max(), ys.max(), ys.min()])/1e3 # convert to km (left, right, bottom, top), imshow by default is inverted in y-axis
+
+    y_mid = (extent[2] + extent[3]) / 2 
+    corrected_y = 2 * y_mid - domain_bound_line[1]
+    domain_bound_line = (domain_bound_line[0], corrected_y)
+    out['domain_bound_line'] = domain_bound_line
+
     _log('All datasets ready.')
     return out
