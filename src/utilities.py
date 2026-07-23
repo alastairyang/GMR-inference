@@ -561,12 +561,12 @@ def load_ase_datasets(verbose=True):
         segments.append((verts[:, 0], verts[:, 1]))
             
     domain_bound_line = segments[0]
-    # flip y wrt to the midpoint of the domain extent to allow origin='upper' in imshow
-    extent = np.array([xs.min(), xs.max(), ys.max(), ys.min()])/1e3 # convert to km (left, right, bottom, top), imshow by default is inverted in y-axis
+    # # flip y wrt to the midpoint of the domain extent to allow origin='upper' in imshow
+    # extent = np.array([xs.min(), xs.max(), ys.max(), ys.min()])/1e3 # convert to km (left, right, bottom, top), imshow by default is inverted in y-axis
 
-    y_mid = (extent[2] + extent[3]) / 2 
-    corrected_y = 2 * y_mid - domain_bound_line[1]
-    domain_bound_line = (domain_bound_line[0], corrected_y)
+    # y_mid = (extent[2] + extent[3]) / 2 
+    # corrected_y = 2 * y_mid - domain_bound_line[1]
+    # domain_bound_line = (domain_bound_line[0], corrected_y)
     out['domain_bound_line'] = domain_bound_line
 
     _log('All datasets ready.')
