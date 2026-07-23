@@ -101,7 +101,7 @@ class model:
         self.n_samples_train      = None
         pass
 
-    def load_sim_data(self, X, Y, domain_mask = None, flight_mask=None, show_plot=True):
+    def load_sim_data(self, X, Y, domain_mask = None, flight_mask=None, show_plot=True, x_name='X', y_name='Y'):
         """ 
         Load the simulation data without any training splitting. We assume that these data have been standardized.
         
@@ -136,7 +136,7 @@ class model:
                 plt.imshow(X_plot, cmap=colormap, vmin = -2, vmax = 2)
                 plt.gca().invert_yaxis()
                 plt.gca().axis('off')
-                plt.title(f'X Sample {idx}')
+                plt.title(f'{x_name} Sample {idx}')
                 # plt.colorbar()
             for i, idx in enumerate(random_indices):
                 plt.subplot(2, 5, i + 6)
@@ -147,7 +147,7 @@ class model:
                 plt.imshow(Y_plot, cmap=colormap, vmin=-2, vmax=2)
                 plt.gca().invert_yaxis()
                 plt.gca().axis('off')
-                plt.title(f'Y Sample {idx}')
+                plt.title(f'{y_name} Sample {idx}')
 
             plt.tight_layout()
 
