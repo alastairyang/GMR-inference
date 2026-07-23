@@ -587,7 +587,7 @@ class model:
             plt.subplot(3, 2, 2)
             plt.imshow(X_samples_std_unprop, 
                        extent=self.extent, origin='lower',
-                       cmap='hot', vmin=0, vmax=3)
+                       cmap='hot', vmin=0, vmax=5)
             plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2, label='Domain Boundary')
             plt.title('Std of $E_b$ (Unpropagated)')
             plt.xlabel('X (km)')
@@ -612,7 +612,7 @@ class model:
             plt.subplot(3, 2, 4)
             plt.imshow(X_samples_std_prop, 
                        extent=self.extent, origin='lower',
-                       cmap='hot', vmin=0, vmax=3)
+                       cmap='hot', vmin=0, vmax=5)
             plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2, label='Domain Boundary')
             plt.title('Std of $E_b$ (Obs. propagated)')
             plt.xlabel('X (km)')
@@ -668,19 +668,21 @@ class model:
             # z_orig = scaler.inverse_transform(z_scaled.reshape(1, -1)).flatten()
             
             # Likelihood term (in original space)
-            residual = Y_obs - z @ V
-            likelihood_term = np.sum(residual**2)
+            residual =  z @ V - Y_obs
+            log_likelihood_term = - (1/2) * np.sum(residual**2)/ (sigma_obs**2)
 
-            # gaussian scaling term
-            log_gauss_scale = (ndim/2) * np.log(2 * np.pi * sigma_obs**2)
-            
+            # multivariate gaussian scaling term
+            # log_gauss_scale = (ndim/2) * np.log(2 * np.pi * sigma_obs**2) # univariate case
+            log_gauss_scale = - (ndim/2) * np.log(2 * np.pi) - (1/2) * ndim * np.log(sigma_obs**2) # multivariate case
+
+            neg_loglikelihood = -1 * (log_likelihood_term + log_gauss_scale)
+
             # Prior term
             neg_density = -1 * to_log_probability_density(gmm_latent, z.reshape(1, -1))[0]
 
-            print(f" Log likelihood: {likelihood_term/sigma_obs**2:.3f}, \
-                     Log gaussian scale: {log_gauss_scale:.3f}, \
-                     Log prior (GMM): {neg_density:.3f}")
-            return likelihood_term / (2*sigma_obs**2) + log_gauss_scale + neg_density
+            # print(f" Negative log likelihood: {neg_loglikelihood:.3f}, \
+            #          Negative log prior (GMM): {neg_density:.3f}")
+            return neg_loglikelihood + neg_density
         
         def gradient_scaled(z, Y_obs, V, sigma_obs, ndim):
             """  
@@ -688,10 +690,10 @@ class model:
             """
             # --- Likelihood gradient ---
             residual = Y_obs - z @ V
-            grad_lik_orig = -residual @ V.T
+            grad_lik_orig = -(residual @ V.T) / sigma_obs**2
 
             # --- Prior gradient (central differences) ---
-            eps = 1e-4
+            eps = 1e-2
             grad_prior = np.zeros_like(z)
             for i in range(len(z)):
                 z_plus = z.copy();  z_plus[i] += eps
@@ -700,7 +702,10 @@ class model:
                 f_minus = -to_log_probability_density(gmm_latent, z_minus.reshape(1,-1))[0]
                 grad_prior[i] = (f_plus - f_minus) / (2 * eps)
 
-            return grad_lik_orig / sigma_obs**2 + grad_prior
+            grad_like_orig_norm = np.linalg.norm(grad_lik_orig)
+            grad_prior_norm = np.linalg.norm(grad_prior)
+            print(f"-----Gradient norm: Likelihood {grad_like_orig_norm:.3f}, Prior {grad_prior_norm:.3f}")
+            return grad_lik_orig + grad_prior
 
         # first get a GMM-based prior
         gmm_latent = GMM(n_components=3, random_state=np.random.RandomState(42))
@@ -731,7 +736,12 @@ class model:
         result = minimize(objective_scaled, z_init_scaled,
                   args=(self.Y_obs_ori.flatten(), self.pca_y.components_, sigma_obs, ndim),
                   jac=gradient_scaled,
-                  method='L-BFGS-B')
+                  method='L-BFGS-B',
+                  options={
+                    'factr': 1e3,      # tighter than default 1e7
+                    'gtol': 1e-5,      # gradient norm tolerance
+                    'maxiter': 1000
+                })
 
         z_optimal = result.x
 
@@ -749,7 +759,7 @@ class model:
 
         if show_plot:
             colormap = 'RdBu_r'
-            plt.figure(figsize=(28, 6))
+            plt.figure(figsize=(20, 6))
             plt.subplot(1,4,1)
             plt.imshow(Y_obs_reconstructed_optimal_img, 
                        extent=self.extent, origin='lower', 
@@ -790,6 +800,8 @@ class model:
             plt.xlabel('X (km)')
             plt.xticks(rotation=45)
             plt.colorbar()
+            plt.savefig('../figs/optimal_Y_in_latent.png', dpi=300, bbox_inches='tight')
+
             plt.show()
         return z_optimal, residual_latent, residual_recon, residual
     
@@ -1648,7 +1660,11 @@ class model:
         """
         n_test_samples_plot = n_samples
         rand_idx = np.random.choice(range(self.n_samples_test), size=n_test_samples_plot, replace=False)
-        for i in rand_idx:
+        plt.figure(figsize=(24, 4 * n_test_samples_plot))
+
+        title_fontsize = 15
+
+        for count, i in enumerate(rand_idx):
             y_test = self.XY_test[i, :self.ndim_reduced_y]  # Y part
             x_test = self.XY_test[i, self.ndim_reduced_y:]  # X part
 
@@ -1681,42 +1697,43 @@ class model:
             obs_Y = self.pca_y.inverse_transform(y_test)
             obs_Y = obs_Y.reshape(self.nx, self.ny)
             # Plotting: five columns: observed Y, True X, predicted X, error (RMSE), uncertainty (stddev)
-            plt.figure(figsize=(24, 4))
-            plt.subplot(1, 5, 1)
+            plt.subplot(n_test_samples_plot, 5, count * 5 + 1)
             plt.imshow(obs_Y, cmap='RdBu', vmin=-3, vmax=3)
-            plt.title('Observed Y')
+            plt.title(rf'Observed $N_a$ (Test Sample {i+1})', fontsize=title_fontsize)
             plt.colorbar()
             # invert y axis
             plt.gca().invert_yaxis()
+            plt.tight_layout()
+            # add a title for the subplot
 
-            plt.subplot(1, 5, 2)
+            plt.subplot(n_test_samples_plot, 5, count * 5 + 2)
             plt.imshow(x_test_img, cmap='RdBu', vmin=-3, vmax=3)
-            plt.title('True X')
+            plt.title(rf'True $E_b$ (Test Sample {i+1})', fontsize=title_fontsize)
             plt.colorbar()
             plt.gca().invert_yaxis()
 
-            plt.subplot(1, 5, 3)
+            plt.subplot(n_test_samples_plot, 5, count * 5 + 3)
             plt.imshow(x_pred_img, cmap='RdBu', vmin=-3, vmax=3)
-            plt.title('Predicted X')
+            plt.title(rf'Predicted $E_b$ (Test Sample {i+1})', fontsize=title_fontsize)
             plt.colorbar()
             plt.gca().invert_yaxis()
             
-            plt.subplot(1, 5, 4)
+            plt.subplot(n_test_samples_plot, 5, count * 5 + 4)
             rmse_img = np.sqrt((x_test_img - x_pred_img) ** 2)
             plt.imshow(rmse_img, cmap='hot', vmin = 0, vmax = 1)
-            plt.title('RMSE')
+            plt.title('RMSE', fontsize=title_fontsize)
             plt.colorbar()
             plt.gca().invert_yaxis()
 
-            plt.subplot(1, 5, 5)
+            plt.subplot(n_test_samples_plot, 5, count * 5 + 5)
             plt.imshow(x_uq_std, cmap='hot', vmin = 0, vmax = 1)
-            plt.title('Uncertainty (stddev)')
+            plt.title('Uncertainty ($\sigma$)', fontsize=title_fontsize)
             plt.colorbar()
             plt.gca().invert_yaxis()
 
-            plt.suptitle(f'Test Sample {i+1}')
-            # save the figure, dpi = 300
-            plt.show()
+
+        plt.savefig(f"../figs/GMR_test.png", dpi=300, bbox_inches='tight')
+        plt.show()
         return
 
 
