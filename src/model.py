@@ -157,7 +157,12 @@ class model:
         self.domain_mask = domain_mask
         self.flight_mask = flight_mask
         # get domain boundary line
-        self.domain_bound_line = self._get_domain_outline(domain_mask)[0]
+        domain_bound_line = self._get_domain_outline(domain_mask)[0]
+        # flip y wrt to the midpoint of the domain extent to allow origin='upper' in imshow
+        y_mid = (self.extent[2] + self.extent[3]) / 2 
+        corrected_y = 2 * y_mid - domain_bound_line[1]
+        self.domain_bound_line = (domain_bound_line[0], corrected_y)
+
         return 
     def _get_domain_outline(self, mask):
         """
@@ -189,6 +194,7 @@ class model:
         for path in cs.collections[0].get_paths():
             verts = path.vertices
             segments.append((verts[:, 0], verts[:, 1]))
+            
 
         return segments
 
@@ -544,7 +550,11 @@ class model:
                                                np.arange(self.ndim_reduced_y), 
                                                self.XY_train[:,:self.ndim_reduced_y])
 
+        # save the propagated GMM
         self.gmm_prop = gmm_propagated
+
+        # save the calibrated attenuation rate
+        self.atten_rate_calibrated = self.pca_y.inverse_transform(mu_obs_latent.reshape(1, -1)).flatten()
 
         if show_plot:
             colormap = 'RdBu_r'
@@ -576,22 +586,24 @@ class model:
             X_samples_std_unprop[self.domain_mask == False] = np.nan
             plt.subplot(3, 2, 1)
             plt.imshow(X_samples_mean_unprop, 
-                       extent=self.extent, origin='lower',
+                       extent=self.extent, origin='upper',
                        cmap=colormap, vmin=-5, vmax=5)
             plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2, label='Domain Boundary')
             plt.title('Mean of $E_b$ (Unpropagated)')
             plt.xlabel('X (km)')
             plt.ylabel('Y (km)')
             plt.xticks(rotation=45)
+            plt.gca().invert_yaxis()
             plt.colorbar()
             plt.subplot(3, 2, 2)
             plt.imshow(X_samples_std_unprop, 
-                       extent=self.extent, origin='lower',
+                       extent=self.extent, origin='upper',
                        cmap='hot', vmin=0, vmax=5)
             plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2, label='Domain Boundary')
             plt.title('Std of $E_b$ (Unpropagated)')
             plt.xlabel('X (km)')
             plt.ylabel('Y (km)')
+            plt.gca().invert_yaxis()
             plt.xticks(rotation=45)
             plt.colorbar()
 
@@ -601,7 +613,7 @@ class model:
             X_samples_std_prop[self.domain_mask == False] = np.nan
             plt.subplot(3, 2, 3)
             plt.imshow(X_samples_mean_prop, 
-                       extent=self.extent, origin='lower',
+                       extent=self.extent, origin='upper',
                        cmap=colormap, vmin=-5, vmax=5)
             plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2, label='Domain Boundary')
             plt.title('Mean of $E_b$ (Obs. propagated)')
@@ -609,14 +621,17 @@ class model:
             plt.ylabel('Y (km)')
             plt.xticks(rotation=45)
             plt.colorbar()
+            plt.gca().invert_yaxis()
+
             plt.subplot(3, 2, 4)
             plt.imshow(X_samples_std_prop, 
-                       extent=self.extent, origin='lower',
+                       extent=self.extent, origin='upper',
                        cmap='hot', vmin=0, vmax=5)
             plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2, label='Domain Boundary')
             plt.title('Std of $E_b$ (Obs. propagated)')
             plt.xlabel('X (km)')
             plt.ylabel('Y (km)')
+            plt.gca().invert_yaxis()
             plt.xticks(rotation=45)
             plt.colorbar()
 
@@ -762,43 +777,50 @@ class model:
             plt.figure(figsize=(20, 6))
             plt.subplot(1,4,1)
             plt.imshow(Y_obs_reconstructed_optimal_img, 
-                       extent=self.extent, origin='lower', 
+                       extent=self.extent, origin='upper', 
                        cmap=colormap, vmin=-2, vmax=2)
             plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2)
             plt.title('Reconstructed Observed Y \n from Optimized Latent z')
             plt.xlabel('X (km)')
+            plt.gca().invert_yaxis()
             # tilt x ticks by 45 degrees
             plt.xticks(rotation=45)
             plt.ylabel('Y (km)')
             plt.colorbar()
+
             plt.subplot(1,4,2)
             plt.imshow(self.Y_obs_ori.reshape(self.nx, self.ny), 
-                       extent=self.extent, origin='lower', 
+                       extent=self.extent, origin='upper', 
                        cmap=colormap, vmin=-2, vmax=2)
             plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2)
             plt.title('Original Mean of Observed Y')
+            plt.gca().invert_yaxis()
             plt.xlabel('X (km)')
             plt.xticks(rotation=45)
             plt.colorbar()
+
             # projecting the residue to PCA space and show the reconstruction
             plt.subplot(1,4,3)
             plt.imshow(residual, 
-                       extent=self.extent, origin='lower', 
+                       extent=self.extent, origin='upper', 
                        cmap=colormap, vmin=-2, vmax=2)
             plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2)
+            plt.gca().invert_yaxis()
             plt.title('Residual')
             plt.xlabel('X (km)')
             plt.xticks(rotation=45)
             plt.colorbar()
+            
             plt.subplot(1,4,4)
             residual_recon_95p = np.percentile(np.abs(residual_recon), 95)
             plt.imshow(residual_recon, 
-                       extent=self.extent, origin='lower', 
+                       extent=self.extent, origin='upper', 
                        cmap=colormap, vmin=-residual_recon_95p, vmax=residual_recon_95p)
             plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], color='black', linewidth=2)
             plt.title('PCA Reconstruction of Residual')
             plt.xlabel('X (km)')
             plt.xticks(rotation=45)
+            plt.gca().invert_yaxis()
             plt.colorbar()
             plt.savefig('../figs/optimal_Y_in_latent.png', dpi=300, bbox_inches='tight')
 
@@ -1614,7 +1636,7 @@ class model:
         worst_deg2pmp = np.where(self.domain_mask == True, worst_deg2pmp, np.nan)
 
         scatter_kw = dict(cmap='coolwarm_r', vmin=0, vmax=1, s=20, facecolors='none', alpha=0.3)
-        imshow_kw  = dict(extent=self.extent, origin='lower', cmap='hot', vmin=0, vmax=5, alpha=0.3)
+        imshow_kw  = dict(extent=self.extent, origin='upper', cmap='hot', vmin=0, vmax=5, alpha=0.3)
 
         panels = [
             (axes[0, 0], best_deg2pmp,  best_thawed_x,  best_thawed_y,  best_thawed_values,  'o', 'Best — Thawed Consistency'),
@@ -1955,7 +1977,8 @@ class model:
         plt.figure(figsize=(8, 8))
         plt.imshow(T.reshape(self.nx, self.ny), 
                    extent=self.extent,
-                   cmap='RdBu_r', 
+                   cmap='RdBu_r',
+                   origin='upper', 
                    vmin=250, vmax=273.15,
                    alpha=0.5)
         plt.colorbar()
@@ -1973,9 +1996,14 @@ class model:
                     label='Inconsistent with Evidence',
                     edgecolors='black',
                     linewidths=0.2)
+        y_mid = (self.extent[2] + self.extent[3]) / 2  # middle of y extent (in km)
+        corrected_y = 2 * y_mid - self.domain_bound_line[1]
+
+        plt.plot(self.domain_bound_line[0], corrected_y, 'k-', lw=2, label='Domain Boundary')
+
         plt.title('Basal Temperature Field with Consistency Markers')
-        plt.legend()
         plt.gca().invert_yaxis()
+        plt.legend()
         plt.xlabel('X (km)')
         plt.ylabel('Y (km)')
         plt.show()
