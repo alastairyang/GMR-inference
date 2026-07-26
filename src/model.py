@@ -1997,10 +1997,8 @@ class model:
                     label='Inconsistent with Evidence',
                     edgecolors='black',
                     linewidths=0.2)
-        y_mid = (self.extent[2] + self.extent[3]) / 2  # middle of y extent (in km)
-        corrected_y = 2 * y_mid - self.domain_bound_line[1]
 
-        plt.plot(self.domain_bound_line[0], corrected_y, 'k-', lw=2, label='Domain Boundary')
+        plt.plot(self.domain_bound_line[0], self.domain_bound_line[1], 'k-', lw=2, label='Domain Boundary')
 
         plt.title('Basal Temperature Field with Consistency Markers')
         plt.gca().invert_yaxis()
