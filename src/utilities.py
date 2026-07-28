@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import scipy
 import xarray as xr
 import scipy.io as sio
 from scipy.interpolate import RegularGridInterpolator
@@ -393,6 +394,8 @@ def load_ase_datasets(verbose=True):
         slope_mag : surface slope magnitude   (m/m)
         slope_x   : slope in x-direction      (m/m)
         slope_y   : slope in y-direction      (m/m)
+        smb     : surface mass balance (m/yr)
+        mask    : boolean mask of the continuous ASE domain
     """
 
     # ─────────────────────────────────────────────────────────────────
@@ -413,7 +416,9 @@ def load_ase_datasets(verbose=True):
                     'trainingAll_image_coord.mat'),
         domain_mask = os.path.join(BASE,
                     'thermal-model/Amundsen-thermal-output-Yang/thermal-training-data/Thwaites-PIG/training/gridded/',
-                    'training_mask_domain_continuous.mat')
+                    'training_mask_domain_continuous.mat'),
+        smb    = os.path.join(BASE,
+                              'thermal-model/data/smb/AIS_smb_avg_1980_2022.mat')
 
     )
 
@@ -568,6 +573,19 @@ def load_ase_datasets(verbose=True):
     # corrected_y = 2 * y_mid - domain_bound_line[1]
     # domain_bound_line = (domain_bound_line[0], corrected_y)
     out['domain_bound_line'] = domain_bound_line
+
+    # ────────────────────────────────────────────────────────────────
+    # 8.  Surface mass balance (SMB)
+    # ────────────────────────────────────────────────────────────────
+    _log('Loading surface mass balance (SMB) …')
+
+    smb_data = scipy.io.loadmat(PATHS['smb'])
+    smb_val = smb_data['smbAvgXY']['data'][0][0]
+    smb_x   = smb_data['smbAvgXY']['x'][0][0].flatten()
+    smb_y   = smb_data['smbAvgXY']['y'][0][0].flatten()
+
+    # interpolate
+    out['smb'] = _regrid(smb_y, smb_x, smb_val, Y, X)
 
     _log('All datasets ready.')
     return out
