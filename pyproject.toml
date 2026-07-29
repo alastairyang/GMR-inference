@@ -7,6 +7,7 @@ dependencies = [
     "cartopy>=0.23.0",
     "gmr>=2.0.3",
     "ipykernel>=6.31.0",
+    "ipympl>=0.10.0",
     "ipywidgets>=8.1.8",
     "matplotlib>=3.9.4",
     "netcdf4>=1.7.2",
