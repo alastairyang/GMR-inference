@@ -163,7 +163,7 @@ class Plotting:
                     handles, labels,
                     loc=d.get('legend_loc', 'lower left'),
                     fontsize=8,
-                    markerscale=2,
+                    markerscale=1,
                     framealpha=0.7,
                     edgecolor='gray',
                 )
@@ -176,7 +176,7 @@ class Plotting:
             self._draw_scatter_layer(fig, ax, panel_d, layer_d, zorder_offset)
         elif data_type == 'line':
             self._draw_line_layer(ax, layer_d, zorder_offset)
-        elif data_type == 'pcolor':
+        elif data_type == 'pcolor' or data_type == 'imshow' or data_type == 'image':
             self._draw_pcolor_layer(fig, ax, panel_d, layer_d)
         else:
             raise ValueError(f"Unknown data_type: '{data_type}'")
