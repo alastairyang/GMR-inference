@@ -1,6 +1,7 @@
 import numpy as np
 import os
 import scipy
+from scipy.ndimage import gaussian_filter
 import xarray as xr
 import scipy.io as sio
 from scipy.interpolate import RegularGridInterpolator
@@ -98,6 +99,60 @@ def standardize(X, mean, std, method='standard', epsilon=None):
 
     else:
         raise ValueError(f"Unknown method: {method}")
+
+
+def smooth_variable_gaussian(field, sigma_field_m, xs, ys, n_bins=10):
+    """
+    NaN-aware spatially-varying Gaussian smooth.
+
+    Parameters
+    ----------
+    field : np.ndarray (M, N)
+        Field to smooth. NaN outside domain.
+    sigma_field_m : np.ndarray (M, N)
+        Local smoothing scale in the SAME UNITS as xs, ys (e.g. meters).
+    xs : 1D array, length N
+        X coordinates (columns).
+    ys : 1D array, length M
+        Y coordinates (rows).
+    n_bins : int
+        Number of sigma bins. Default 10.
+    """
+    # --- pixel spacing (assume uniform grid) ---
+    dx = np.abs(np.diff(xs).mean())
+    dy = np.abs(np.diff(ys).mean())
+    dp = 0.5 * (dx + dy)          # single representative pixel size
+
+    # --- convert physical sigma → pixel sigma ---
+    sigma_px = sigma_field_m / dp
+
+    print(f"Pixel size: {dp:.1f} units | "
+          f"sigma range: {np.nanmin(sigma_px):.1f} – {np.nanmax(sigma_px):.1f} px")
+
+    valid        = np.isfinite(field)
+    field_filled = np.where(valid, field, 0.0)
+    mask         = valid.astype(float)
+
+    sigma_vals  = sigma_px[valid]
+    bin_edges   = np.linspace(sigma_vals.min(), sigma_vals.max(), n_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    num = np.zeros_like(field)
+    den = np.zeros_like(field)
+
+    for sigma in bin_centers:
+        half_bw = (bin_edges[1] - bin_edges[0]) / 2.0
+        in_bin  = (sigma_px >= sigma - half_bw) & \
+                  (sigma_px <  sigma + half_bw) & valid
+
+        if not in_bin.any():
+            continue
+
+        in_bin_f = in_bin.astype(float)
+        num += gaussian_filter(field_filled * in_bin_f, sigma=sigma)
+        den += gaussian_filter(mask         * in_bin_f, sigma=sigma)
+
+    return np.where(valid & (den > 0), num / den, np.nan)
 
 # ---------- NOT ACTIVELY USED ----------
 def build_distance_matrix(x, y):
