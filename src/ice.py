@@ -234,7 +234,7 @@ def conductivity_to_attenu_rate(sigma):
     return N
 
 
-def attenu_rate_to_temperature(N, T_bounds=(200.0, 273.15), **kwargs):
+def attenu_rate_to_temperature(N, T_bounds=(200.0, 293.15), **kwargs):
     """
     Solve for ice temperature T (K) given a target attenuation rate N (dB/km).
 
@@ -293,7 +293,11 @@ def attenu_rate_to_temperature(N, T_bounds=(200.0, 273.15), **kwargs):
     T_solved = np.empty_like(N)
 
     for i, Ni in enumerate(N):
-        if not (N_min <= Ni <= N_max):
+        # if nan, we skip and just return nan
+        if np.isnan(Ni):
+            T_solved[i] = np.nan
+            continue
+        elif not (N_min <= Ni <= N_max):
             raise ValueError(
                 f"Target N = {Ni:.4f} dB/km is outside the reachable range "
                 f"[{N_min:.4f}, {N_max:.4f}] dB/km for T in {T_bounds} K.\n"
