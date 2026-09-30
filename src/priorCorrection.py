@@ -1,11 +1,13 @@
 import torch
+import torch.optim as optim
+from numpy.linalg import svd
 from src.observationOperator import latent_operator_enthalpy, binary_operator
 
 class PriorCorrection:
     def __init__(self):
         pass
 
-    def load_simulation_var(self, V, Eb_star, Eb_mean, Eb_std, Tpmp, method, epsilon, mask, dT_cutoff=1):
+    def load_simulation_var(self, V, Eb_star, Eb_mean, Eb_std, Tpmp, method, epsilon):
         self.V         = V
         self.Eb_star   = Eb_star
         self.Eb_mean   = Eb_mean
@@ -35,6 +37,20 @@ class PriorCorrection:
         self.dT_cutoff = dT_cutoff
         self.n_obs     = self.mask.sum() # total number of obs
         return
+
+    def _covariance_matrix(self):
+        """
+        Compute the covariance matrix from the simulated basal obs.
+        """
+
+        # no perturbation, just raw simulated base
+        binary_base = self._simulated_obs(torch.zeros_like(self.Eb_star))
+        binary_base = binary_base[self.mask]
+        covariance_matrix = torch.tensor(svd(binary_base, full_matrices=False)[1])
+
+        # cholesky, make MVN easier later
+        
+        return covariance_matrix
 
     def _initialize_alpha(self):
         """
@@ -93,18 +109,23 @@ class PriorCorrection:
         """
         return lasso_lambda * torch.sum(torch.abs(alpha))
 
-    def solve_MAP(self, lasso_lambda, sigma_sq):
+    def solve_MAP(self, lasso_lambda, sigma_sq, lr = 0.1, max_iter = 50):
         """
         Solve this maximum a posteriori (MAP) estimation problem for alpha.
         """
 
         self._initialize_alpha()
-
+        optimizer = optim.LBFGS([self.alpha], lr=lr, max_iter=max_iter)
         def objective(alpha):
             return -self.log_likelihood(sigma_sq, alpha) + self.lasso(lasso_lambda, alpha)
 
-        result = torch.optim.minimize(objective, self.alpha)
-        self.alpha = result.x
+        def closure():
+            optimizer.zero_grad()
+            loss = objective(self.alpha)
+            loss.backward()
+            return loss
+
+        optimizer.step(closure)
         return self.alpha
 
     
