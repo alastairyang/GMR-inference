@@ -85,11 +85,12 @@ def binary_operator(delta_T, dT_cutoff, mask=None):
     binary_class = torch.nan * torch.ones_like(delta_T)
     # if delta_T > dT_cutoff, it is frozen (0), since it is farther from PMP
     # else it is thawed 
-    binary_class[delta_T > dT_cutoff] = 0
-    binary_class[delta_T <= dT_cutoff] = 1
+    binary_class[delta_T > dT_cutoff] = 0 # frozen
+    binary_class[delta_T <= dT_cutoff] = 1 # thawed
     if mask is not None:
         mask = torch.where(mask, torch.tensor(1), torch.nan)
-        mask_full = torch.tile(mask, (delta_T.shape[0], 1))
-        binary_class = binary_class * mask_full
+        n_sample = delta_T.shape[1]
+        for ii in range(n_sample):
+            binary_class[:, ii] = binary_class[:, ii] * mask
 
     return binary_class
