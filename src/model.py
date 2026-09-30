@@ -90,6 +90,8 @@ class model:
         # dimension and indices
         self.nx = None
         self.ny = None
+        self.x_indices = None # Eb_star indices
+        self.y_indices = None # Na_star indices
         self.ndim_ori     = None
         self.ndim_reduced_total = None
         self.ndim_reduced_x     = None

@@ -6,9 +6,9 @@ from src.utilities import reverse_standardize
 # this script defines the observation operator
 # which operators on the simulation output (enthalpy or basal temperature)
 # to produce binary features of thawed or frozen base
-
+# ----
 # We write everything in torch for AD uses 
-
+# ----
 def latent_operator_enthalpy(V, Eb_star, Eb_mean, Eb_std, Tpmp, method, epsilon=None):
     """  
     Observation operator, operating on latent PCA coefficients of standized enthalpy.
@@ -70,11 +70,11 @@ def binary_operator(delta_T, dT_cutoff, mask=None):
     
     Parameters
     ----------
-    delta_T : torch.Tensor
+    delta_T : torch.Tensor, (n_physical_feature, n_sample)
         Degree to melting point.
     dT_cutoff : float
         positive; threshold for classifying as thawed or frozen.
-    mask : torch.Tensor, optional
+    mask : torch.Tensor, optional, (n_physical_feature,)
         Boolean mask indicating which elements to consider for classification. If None, all elements are considered.
 
     Returns
