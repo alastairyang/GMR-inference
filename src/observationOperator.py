@@ -62,7 +62,7 @@ def operator_temperature(Tb, Tpmp):
     """
     return Tpmp - Tb
 
-def binary_operator(delta_T, dT_cutoff, mask=None):
+def binary_hard_operator(delta_T, dT_cutoff, mask=None):
     """
     A simple binary operator that classifies whether the base is thawed or frozen
     based on degree to melting point. Thresholds are user input to acknowledge 
@@ -94,3 +94,10 @@ def binary_operator(delta_T, dT_cutoff, mask=None):
             binary_class[:, ii] = binary_class[:, ii] * mask
 
     return binary_class
+
+def binary_soft_operator(delta_T, beta):
+    if beta <= 0:
+        raise ValueError("beta must be strictly positive.")
+
+    # Assumes delta_T >= 0 means below the pressure-melting point.
+    return torch.exp(-torch.clamp_min(delta_T, 0.0) / beta)
