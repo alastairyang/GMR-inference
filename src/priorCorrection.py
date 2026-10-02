@@ -80,8 +80,8 @@ class PriorCorrection:
         self.method = method
         self.epsilon = epsilon
 
-        self.n_simulations = Eb_star.shape[0]
-        self.n_modes = Eb_star.shape[1]
+        self.n_simulations = Eb_star.shape[1]
+        self.n_modes = Eb_star.shape[0]
 
     def load_observation(self, base, beta=1.0):
         """
@@ -149,7 +149,8 @@ class PriorCorrection:
         # Broadcasting applies the same correction to each ensemble member.
         # Negative alpha contracts a PCA mode; positive alpha inflates it.
         scale = torch.exp(alpha)
-        Eb_star_corrected = self.Eb_star * scale.unsqueeze(0)
+        Eb_star_corrected = self.Eb_star.T * scale.unsqueeze(0)
+        Eb_star_corrected = Eb_star_corrected.T
 
         delta_T = latent_operator_enthalpy(
             self.V,
@@ -167,7 +168,7 @@ class PriorCorrection:
             self.beta,
         )
 
-        return simulated_evidence
+        return simulated_evidence.T
 
     def _observed_simulated_evidence(self, alpha):
         """
@@ -180,6 +181,7 @@ class PriorCorrection:
             evidence locations.
         """
         simulated_evidence = self._simulated_obs(alpha)
+        print("simulated_evidence shape:", simulated_evidence.shape)
 
         if simulated_evidence.shape[0] != self.n_simulations:
             raise ValueError(
