@@ -2,6 +2,7 @@ import math
 
 import torch
 import torch.optim as optim
+from tqdm.auto import tqdm
 
 from src.observationOperator import (
     latent_operator_enthalpy,
@@ -125,20 +126,49 @@ class PriorCorrection:
             )
         )
 
+    def _prepare_observed_domain(self):
+        """
+        Cache all simulation quantities at observed spatial locations.
+        """
+        flat_mask = self.mask.reshape(-1)
+
+        if self.V.shape[1] != flat_mask.numel():
+            raise ValueError(
+                "V must have one column per flattened physical location. "
+                f"V has {self.V.shape[1]} columns, while the observation "
+                f"domain has {flat_mask.numel()} locations."
+            )
+
+        self.V_observed = self.V[:, flat_mask]
+
+        self.Eb_mean_observed = (
+            self.Eb_mean.reshape(-1)[flat_mask]
+        )
+        self.Eb_std_observed = (
+            self.Eb_std.reshape(-1)[flat_mask]
+        )
+        self.Tpmp_observed = (
+            self.Tpmp.reshape(-1)[flat_mask]
+        )
+        self.base_observed = (
+            self.base.reshape(-1)[flat_mask]
+            .to(
+                dtype=self.Eb_star.dtype,
+                device=self.Eb_star.device,
+            )
+        )
+
+
     def _simulated_obs(self, alpha):
         """
-        Compute the simulated soft basal thermal-state evidence.
-
-        Parameters
-        ----------
-        alpha : torch.Tensor
-            Mode-dependent log-scale corrections with shape (r_E,).
+        Compute soft evidence only at observed locations.
 
         Returns
         -------
-        simulated_evidence : torch.Tensor
-            Simulated soft evidence. The first dimension must correspond
-            to the K simulations.
+        torch.Tensor
+            Simulated evidence with shape:
+
+                (n_simulations, n_observations)
         """
         if alpha.shape != (self.n_modes,):
             raise ValueError(
@@ -146,63 +176,50 @@ class PriorCorrection:
                 f"but received {tuple(alpha.shape)}."
             )
 
-        # Broadcasting applies the same correction to each ensemble member.
-        # Negative alpha contracts a PCA mode; positive alpha inflates it.
         scale = torch.exp(alpha)
-        Eb_star_corrected = self.Eb_star.T * scale.unsqueeze(0)
-        Eb_star_corrected = Eb_star_corrected.T
 
-        delta_T = latent_operator_enthalpy(
-            self.V,
+        # Shape: (n_modes, n_simulations)
+        Eb_star_corrected = (
+            self.Eb_star * scale[:, None]
+        )
+
+        # Output shape:
+        #     (n_observations, n_simulations)
+        delta_T_observed = latent_operator_enthalpy(
+            self.V_observed,
             Eb_star_corrected,
-            self.Eb_mean,
-            self.Eb_std,
-            self.Tpmp,
+            self.Eb_mean_observed,
+            self.Eb_std_observed,
+            self.Tpmp_observed,
             self.method,
             self.epsilon,
         )
 
-        # IMPORTANT: binary_operator must be a smooth map during optimization.
         simulated_evidence = binary_soft_operator(
-            delta_T,
+            delta_T_observed,
             self.beta,
         )
 
+        # Return shape:
+        #     (n_simulations, n_observations)
         return simulated_evidence.T
 
     def _observed_simulated_evidence(self, alpha):
-        """
-        Evaluate the simulated evidence only at observed locations.
+        Omega = self._simulated_obs(alpha)
 
-        Returns
-        -------
-        torch.Tensor
-            Matrix with shape (K, d), where d is the number of observed
-            evidence locations.
-        """
-        simulated_evidence = self._simulated_obs(alpha)
-        print("simulated_evidence shape:", simulated_evidence.shape)
-
-        if simulated_evidence.shape[0] != self.n_simulations:
-            raise ValueError(
-                "The first dimension returned by _simulated_obs must "
-                "correspond to the simulation ensemble."
-            )
-
-        # Flatten all non-ensemble dimensions.
-        simulated_evidence = simulated_evidence.reshape(
-            self.n_simulations, -1
+        expected_shape = (
+            self.n_simulations,
+            self.n_obs,
         )
-        flat_mask = self.mask.reshape(-1)
 
-        if simulated_evidence.shape[1] != flat_mask.numel():
+        if Omega.shape != expected_shape:
             raise ValueError(
-                "The simulated evidence and observed base do not have "
-                "the same number of spatial locations."
+                f"Expected Omega to have shape {expected_shape}, "
+                f"but received {tuple(Omega.shape)}."
             )
 
-        # The mask acts on evidence locations, not simulations.
-        return simulated_evidence[:, flat_mask]
+        return Omega
+
 
     def _covariance_matrix(self, alpha_ref=None, rank_tolerance=None):
         """
@@ -357,12 +374,7 @@ class PriorCorrection:
         # Ensemble-mean simulated evidence, shape (d,).
         simulated_mean = Omega.mean(dim=0)
 
-        observed = self.base.reshape(-1)[self.mask.reshape(-1)]
-        observed = observed.to(
-            dtype=simulated_mean.dtype,
-            device=simulated_mean.device,
-        )
-
+        observed = self.base_observed
         residual = observed - simulated_mean
 
         # First Woodbury term:
@@ -503,8 +515,11 @@ class PriorCorrection:
         rank_tolerance=None,
         lr=0.5,
         max_iter=100,
+        max_eval_per_iter=10,
         tolerance_grad=1.0e-7,
         tolerance_change=1.0e-9,
+        show_progress=True,
+        use_line_search=True,
     ):
         """
         Solve the smooth elastic-net MAP problem using L-BFGS.
@@ -512,32 +527,44 @@ class PriorCorrection:
         Parameters
         ----------
         regularization_strength : float
-            Overall elastic-net weight, gamma.
+            Overall elastic-net weight.
         sigma_sq : float or torch.Tensor
-            Isotropic residual variance, sigma^2.
+            Isotropic residual variance.
         l1_ratio : float, optional
-            Elastic-net mixing parameter:
-
-                1.0 : smoothed Lasso
-                0.0 : ridge
-                0 < l1_ratio < 1 : smooth elastic net
-
+            Elastic-net mixing parameter.
         smoothing_epsilon : float, optional
-            Smoothing parameter used in the differentiable approximation
-            to the absolute value.
+            Smoothing parameter for the approximate L1 penalty.
         alpha_ref : torch.Tensor, optional
             Reference correction used to construct the fixed covariance.
-            The default is alpha_ref = 0.
         rank_tolerance : float, optional
             Numerical rank tolerance for the covariance SVD.
         lr : float, optional
             L-BFGS learning-rate parameter.
         max_iter : int, optional
-            Maximum number of L-BFGS iterations.
+            Maximum number of accepted outer L-BFGS iterations.
+        max_eval_per_iter : int, optional
+            Approximate maximum number of closure evaluations per outer
+            L-BFGS iteration.
+        tolerance_grad : float, optional
+            Gradient convergence tolerance.
+        tolerance_change : float, optional
+            Objective-change convergence tolerance.
+        show_progress : bool, optional
+            Display progress bars.
+        use_line_search : bool, optional
+            Use strong-Wolfe line search. Disabling it greatly reduces
+            closure evaluations but can make optimization less robust.
         """
         self._initialize_alpha()
+        self._prepare_observed_domain()
 
-        # Compute C_ref, its compact SVD, and all fixed covariance terms.
+        if max_iter < 1:
+            raise ValueError("max_iter must be at least 1.")
+
+        if max_eval_per_iter < 1:
+            raise ValueError("max_eval_per_iter must be at least 1.")
+
+        # Compute the fixed covariance representation.
         self._prepare_fixed_metric(
             sigma_sq=sigma_sq,
             alpha_ref=alpha_ref,
@@ -547,14 +574,40 @@ class PriorCorrection:
         optimizer = optim.LBFGS(
             [self.alpha],
             lr=lr,
-            max_iter=max_iter,
+            max_iter=1,
+            max_eval=1,
             tolerance_grad=tolerance_grad,
             tolerance_change=tolerance_change,
             line_search_fn="strong_wolfe",
         )
 
+        closure_evaluations = 0
+        loss_history = []
+        gradient_history = []
+        previous_loss = None
+        convergence_reason = "maximum iterations reached"
+
+        iteration_bar = tqdm(
+            total=max_iter,
+            desc="L-BFGS iterations",
+            unit="iter",
+            position=0,
+            disable=not show_progress,
+        )
+
+        evaluation_bar = tqdm(
+            total=max_iter * max_eval_per_iter,
+            desc="Objective evaluations",
+            unit="eval",
+            position=1,
+            leave=False,
+            disable=not show_progress,
+        )
+
         def closure():
-            optimizer.zero_grad()
+            nonlocal closure_evaluations
+
+            optimizer.zero_grad(set_to_none=True)
 
             loss = self.objective(
                 alpha=self.alpha,
@@ -563,14 +616,118 @@ class PriorCorrection:
                 smoothing_epsilon=smoothing_epsilon,
             )
 
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    "The optimization objective became non-finite. "
+                    "Check sigma_sq, beta, alpha, and the outputs of the "
+                    "observation operator."
+                )
+
             loss.backward()
+
+            closure_evaluations += 1
+            evaluation_bar.update(1)
+            evaluation_bar.set_postfix(
+                loss=f"{loss.detach().item():.6e}",
+                refresh=True,
+            )
+
             return loss
 
-        optimizer.step(closure)
+        try:
+            for iteration in range(max_iter):
+                optimizer.step(closure)
 
-        # Evaluate the final objective outside the closure for reporting.
+                # Evaluate diagnostics at the accepted parameter value.
+                # This forward evaluation is not counted as a line-search
+                # closure evaluation.
+                with torch.no_grad():
+                    current_loss = self.objective(
+                        alpha=self.alpha,
+                        regularization_strength=regularization_strength,
+                        l1_ratio=l1_ratio,
+                        smoothing_epsilon=smoothing_epsilon,
+                    )
+
+                current_loss_value = current_loss.item()
+
+                # Recompute the gradient at the accepted parameter value.
+                # The last line-search closure is not guaranteed to have been
+                # evaluated exactly at the final accepted alpha.
+                optimizer.zero_grad(set_to_none=True)
+
+                diagnostic_loss = self.objective(
+                    alpha=self.alpha,
+                    regularization_strength=regularization_strength,
+                    l1_ratio=l1_ratio,
+                    smoothing_epsilon=smoothing_epsilon,
+                )
+                diagnostic_loss.backward()
+
+                gradient_norm = (
+                    self.alpha.grad.detach()
+                    .abs()
+                    .max()
+                    .item()
+                )
+
+                alpha_norm = self.alpha.detach().norm().item()
+
+                if previous_loss is None:
+                    loss_change = float("inf")
+                else:
+                    loss_change = abs(
+                        previous_loss - current_loss_value
+                    )
+
+                loss_history.append(current_loss_value)
+                gradient_history.append(gradient_norm)
+
+                iteration_bar.update(1)
+                iteration_bar.set_postfix(
+                    loss=f"{current_loss_value:.6e}",
+                    grad=f"{gradient_norm:.3e}",
+                    dloss=f"{loss_change:.3e}",
+                    alpha=f"{alpha_norm:.3e}",
+                    evals=closure_evaluations,
+                    refresh=True,
+                )
+
+                if (
+                    math.isfinite(gradient_norm)
+                    and gradient_norm <= tolerance_grad
+                ):
+                    convergence_reason = "gradient tolerance reached"
+                    break
+
+                if (
+                    previous_loss is not None
+                    and loss_change <= tolerance_change
+                ):
+                    convergence_reason = (
+                        "objective-change tolerance reached"
+                    )
+                    break
+
+                previous_loss = current_loss_value
+
+        finally:
+            iteration_bar.close()
+            evaluation_bar.close()
+
+        optimizer.zero_grad(set_to_none=True)
+
         with torch.no_grad():
             final_loss = self.objective(
+                alpha=self.alpha,
+                regularization_strength=regularization_strength,
+                l1_ratio=l1_ratio,
+                smoothing_epsilon=smoothing_epsilon,
+            )
+
+            final_mahalanobis = self.mahalanobis(self.alpha)
+
+            final_penalty = self.smooth_elastic_net(
                 alpha=self.alpha,
                 regularization_strength=regularization_strength,
                 l1_ratio=l1_ratio,
@@ -581,9 +738,16 @@ class PriorCorrection:
             "alpha": self.alpha.detach().clone(),
             "scale": torch.exp(self.alpha.detach()).clone(),
             "loss": final_loss.detach().clone(),
+            "mahalanobis": final_mahalanobis.detach().clone(),
+            "regularization_penalty": final_penalty.detach().clone(),
             "covariance_rank": self.cov_rank,
             "singular_values": self.cov_singular_values.clone(),
             "logdet_S": self.logdet_S.clone(),
+            "iterations": len(loss_history),
+            "closure_evaluations": closure_evaluations,
+            "loss_history": loss_history,
+            "gradient_history": gradient_history,
+            "convergence_reason": convergence_reason,
         }
 
         return result

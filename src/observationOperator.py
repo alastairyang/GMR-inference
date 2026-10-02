@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import torch.nn.functional as F
 from src.ice import enthalpy_to_temperature
 from src.utilities import reverse_standardize
 
@@ -9,51 +10,139 @@ from src.utilities import reverse_standardize
 # ----
 # We write everything in torch for AD uses 
 # ----
-def latent_operator_enthalpy(V, Eb_star, Eb_mean, Eb_std, Tpmp, method, epsilon=None):
-    """  
-    Observation operator, operating on latent PCA coefficients of standized enthalpy.
+def latent_operator_enthalpy(
+    V,
+    Eb_star,
+    Eb_mean,
+    Eb_std,
+    Tpmp,
+    method,
+    epsilon=None,
+):
+    """
+    Vectorized observation operator acting on latent PCA coefficients.
 
-    This operator only produces degree to melting point, which is interpretable
-    to both thawed and frozen states. The downstream applications (E.g. adding
-    a likelihood model, or just thresholding for a binary outcome) are specified 
-    elsewhere such that this is meant to be kept modular and reusable.
-    
     Parameters
     ----------
-    V : torch.Tensor, (n_latent_feature, n_physical_feature)
-        PCA components matrix.
-    Eb_star : torch.Tensor, (n_latent_feature, n_sample)
-        Latent PCA coefficients.
-    Eb_mean : torch.Tensor (n_physical_feature,)
-        Mean of the original enthalpy data.
-    Eb_std : torch.Tensor, (n_physical_feature,)
-        Standard deviation of the original enthalpy data.
-    Tpmp : torch.Tensor, (n_physical_feature,)
-        Pressure melting point.
-    method : str
-        Method for reverse standardization.
-    epsilon : float, optional
-        Small value for relaxation method.
-    
-    """
+    V : torch.Tensor
+        PCA component matrix with shape:
 
+            (n_latent_features, n_physical_features)
+
+    Eb_star : torch.Tensor
+        Latent PCA coefficients with shape:
+
+            (n_latent_features, n_samples)
+
+    Eb_mean : torch.Tensor
+        Mean enthalpy with shape:
+
+            (n_physical_features,)
+
+    Eb_std : torch.Tensor
+        Enthalpy standard deviation with shape:
+
+            (n_physical_features,)
+
+    Tpmp : torch.Tensor
+        Pressure-melting-point temperature with shape:
+
+            (n_physical_features,)
+
+    method : str
+        Reverse-standardization method.
+
+    epsilon : float, optional
+        Relaxation constant.
+    """
     if epsilon is None and method == "relaxation":
-        # error
-        raise ValueError("Epsilon must be provided for relaxation method")
-    
+        raise ValueError(
+            "epsilon must be provided for the relaxation method."
+        )
+
+    if V.ndim != 2:
+        raise ValueError("V must be a two-dimensional tensor.")
+
+    if Eb_star.ndim != 2:
+        raise ValueError(
+            "Eb_star must be a two-dimensional tensor."
+        )
+
+    if V.shape[0] != Eb_star.shape[0]:
+        raise ValueError(
+            "The latent dimension of V must match the first "
+            "dimension of Eb_star."
+        )
+
+    # Reconstruct every simulation simultaneously.
+    #
+    # V.T:     (n_physical_features, n_latent_features)
+    # Eb_star: (n_latent_features, n_samples)
+    # Eb:      (n_physical_features, n_samples)
     Eb = V.T @ Eb_star
 
+    # Add a singleton sample dimension so the physical-location
+    # quantities broadcast across all ensemble members.
+    Eb_mean_column = Eb_mean.reshape(-1, 1)
+    Eb_std_column = Eb_std.reshape(-1, 1)
+    Tpmp_column = Tpmp.reshape(-1, 1)
+
+    # Expected result:
+    #     Eb_original.shape == (n_physical_features, n_samples)
+    Eb_original = reverse_standardize(
+        Eb,
+        Eb_mean_column,
+        Eb_std_column,
+        method=method,
+        epsilon=epsilon,
+    )
+
+    # This function should use only elementwise tensor operations so that
+    # Tpmp_column broadcasts over all simulations.
+    Tb_original = enthalpy_to_temperature(
+        Eb_original,
+        Tpmp_column,
+    )
+
+    # Broadcasting avoids constructing Tpmp with .repeat().
+    delta_T = Tpmp_column - Tb_original
+
+    return delta_T
+
+def latent_operator_enthalpy_loop(
+    V,
+    Eb_star,
+    Eb_mean,
+    Eb_std,
+    Tpmp,
+    method,
+    epsilon=None,
+):
+    if epsilon is None and method == "relaxation":
+        raise ValueError(
+            "epsilon must be provided for the relaxation method."
+        )
+
+    Eb = V.T @ Eb_star
     n_sample = Eb_star.shape[1]
 
     Tb_ori = torch.zeros_like(Eb)
+
     for ii in range(n_sample):
-        Eb_ori = reverse_standardize(Eb[:, ii], Eb_mean, Eb_std, 
-                                           method=method, epsilon=epsilon)
+        Eb_ori = reverse_standardize(
+            Eb[:, ii],
+            Eb_mean,
+            Eb_std,
+            method=method,
+            epsilon=epsilon,
+        )
 
-        Tb_ori[:, ii] = enthalpy_to_temperature(Eb_ori, Tpmp)
+        Tb_ori[:, ii] = enthalpy_to_temperature(
+            Eb_ori,
+            Tpmp,
+        )
 
-    Tpmp_array = Tpmp.unsqueeze(1).repeat(1, n_sample)
-    delta_T = operator_temperature(Tb_ori, Tpmp_array)
+    delta_T = Tpmp[:, None] - Tb_ori
     return delta_T
 
 def operator_temperature(Tb, Tpmp):
@@ -95,9 +184,26 @@ def binary_hard_operator(delta_T, dT_cutoff, mask=None):
 
     return binary_class
 
-def binary_soft_operator(delta_T, beta):
+
+def binary_soft_operator(
+    delta_T,
+    beta,
+    clamp_sharpness=20.0,
+):
     if beta <= 0:
         raise ValueError("beta must be strictly positive.")
 
-    # Assumes delta_T >= 0 means below the pressure-melting point.
-    return torch.exp(-torch.clamp_min(delta_T, 0.0) / beta)
+    if clamp_sharpness <= 0:
+        raise ValueError(
+            "clamp_sharpness must be strictly positive."
+        )
+
+    # Smooth approximation to max(delta_T, 0).
+    positive_delta = (
+        F.softplus(
+            clamp_sharpness * delta_T
+        )
+        / clamp_sharpness
+    )
+
+    return torch.exp(-positive_delta / beta)

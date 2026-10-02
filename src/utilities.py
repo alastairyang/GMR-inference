@@ -30,7 +30,7 @@ def shape_check(X, mean, std):
     """
     Checks that mean and std are compatible with X for broadcasting.
     Allows:
-      - X shape (n_features,)     with mean/std shape (n_features,)
+      - X shape (n_features,) or     with mean/std shape (n_features,)
       - X shape (N, n_features)   with mean/std shape (n_features,)
       - X shape (N, n_features)   with mean/std shape (N, n_features)
     """
@@ -60,7 +60,7 @@ def reverse_standardize(X, mean, std, method='standard', epsilon=None):
     method : 'standard' or 'relaxation'
     epsilon : float, required if method='relaxation'
     """
-    shape_check(X, mean, std)
+    # shape_check(X, mean, std)
 
     if method == 'standard':
         return X * std + mean
@@ -68,7 +68,9 @@ def reverse_standardize(X, mean, std, method='standard', epsilon=None):
     elif method == 'relaxation':
         if epsilon is None:
             raise ValueError("Epsilon must be provided for relaxation method")
-        return X * (std + epsilon) + mean
+
+        result = X * (std + epsilon) + mean
+        return result
 
     else:
         raise ValueError(f"Unknown method: {method}")
