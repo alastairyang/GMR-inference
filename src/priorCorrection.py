@@ -5,8 +5,10 @@ import torch.optim as optim
 from tqdm.auto import tqdm
 
 from src.observationOperator import (
-    latent_operator_enthalpy,
-    binary_soft_operator,
+    latent_temperature_operator_enthalpy,
+    latent_waterfraction_operator_enthalpy,
+    temperature_binary_soft_operator,
+    waterfraction_binary_soft_operator,
 )
 
 
@@ -25,8 +27,12 @@ class PriorCorrection:
     reference value of alpha and held constant during optimization.
     """
 
-    def __init__(self):
+    def __init__(self, gamma_wf = 0.005, wf_threshold = 0.02):
         self.alpha = None
+
+        # water fraction penalty terms
+        self.gamma_wf = gamma_wf
+        self.wf_threshold = wf_threshold
 
         # Fixed-covariance SVD factors
         self.cov_singular_values = None
@@ -37,6 +43,9 @@ class PriorCorrection:
         self.sigma_sq = None
         self.woodbury_weights = None
         self.logdet_S = None
+        self.alpha_free = None
+        self.active_modes = None
+
 
     def load_simulation_var(
         self,
@@ -112,19 +121,75 @@ class PriorCorrection:
         if self.n_obs == 0:
             raise ValueError("No valid observations were provided.")
 
-    def _initialize_alpha(self):
+    def _initialize_alpha(self, active_modes=None):
         """
-        Initialize one correction parameter per retained PCA mode.
+        Initialize correction parameters only for selected PCA modes.
 
-        alpha_i = 0 corresponds to a multiplicative scale exp(alpha_i) = 1.
+        Parameters
+        ----------
+        active_modes : sequence of int, optional
+            Indices of modes allowed to change. If None, all modes are active.
         """
-        self.alpha = torch.nn.Parameter(
-            torch.zeros(
+        if active_modes is None:
+            active_modes = torch.arange(
                 self.n_modes,
+                dtype=torch.long,
+                device=self.Eb_star.device,
+            )
+        else:
+            active_modes = torch.as_tensor(
+                active_modes,
+                dtype=torch.long,
+                device=self.Eb_star.device,
+            )
+
+        if active_modes.ndim != 1:
+            raise ValueError("active_modes must be one-dimensional.")
+
+        if active_modes.numel() == 0:
+            raise ValueError("At least one active mode must be selected.")
+
+        if (
+            active_modes.min().item() < 0
+            or active_modes.max().item() >= self.n_modes
+        ):
+            raise ValueError(
+                f"Mode indices must lie between 0 and {self.n_modes - 1}."
+            )
+
+        if torch.unique(active_modes).numel() != active_modes.numel():
+            raise ValueError("active_modes contains duplicate indices.")
+
+        self.active_modes = active_modes
+
+        # Only these entries are passed to the optimizer.
+        self.alpha_free = torch.nn.Parameter(
+            torch.zeros(
+                active_modes.numel(),
                 dtype=self.Eb_star.dtype,
                 device=self.Eb_star.device,
             )
         )
+
+    def _full_alpha(self):
+        """
+        Insert optimized parameters into a full-length alpha vector.
+
+        Inactive modes remain zero, corresponding to exp(alpha) = 1.
+        """
+        alpha_full = torch.zeros(
+            self.n_modes,
+            dtype=self.alpha_free.dtype,
+            device=self.alpha_free.device,
+        )
+
+        return alpha_full.index_copy(
+            0,
+            self.active_modes,
+            self.alpha_free,
+        )
+
+
 
     def _prepare_observed_domain(self):
         """
@@ -185,7 +250,7 @@ class PriorCorrection:
 
         # Output shape:
         #     (n_observations, n_simulations)
-        delta_T_observed = latent_operator_enthalpy(
+        delta_T_observed = latent_temperature_operator_enthalpy(
             self.V_observed,
             Eb_star_corrected,
             self.Eb_mean_observed,
@@ -195,7 +260,7 @@ class PriorCorrection:
             self.epsilon,
         )
 
-        simulated_evidence = binary_soft_operator(
+        simulated_evidence = temperature_binary_soft_operator(
             delta_T_observed,
             self.beta,
         )
@@ -203,6 +268,38 @@ class PriorCorrection:
         # Return shape:
         #     (n_simulations, n_observations)
         return simulated_evidence.T
+
+    def _simulated_waterfraction(self, alpha):
+        """
+        Compute the simulated water fraction across the whole domain
+        """
+        if alpha.shape != (self.n_modes,):
+            raise ValueError(
+                f"alpha must have shape ({self.n_modes},), "
+                f"but received {tuple(alpha.shape)}."
+            )
+        scale = torch.exp(alpha)
+        Eb_star_corrected = (
+            self.Eb_star * scale[:, None]
+        )
+
+        wf_sim = latent_waterfraction_operator_enthalpy(
+            self.V,
+            Eb_star_corrected,
+            self.Eb_mean,
+            self.Eb_std,
+            self.Tpmp,
+            self.method,
+            self.epsilon,
+        )
+
+        wf_binary = waterfraction_binary_soft_operator(
+            wf_sim,
+            self.gamma_wf,
+            self.wf_threshold,
+        )
+
+        return wf_binary
 
     def _observed_simulated_evidence(self, alpha):
         Omega = self._simulated_obs(alpha)
@@ -422,6 +519,40 @@ class PriorCorrection:
             + self.logdet_S
             + quadratic
         )
+    def water_fraction_penalty(
+            self,
+            alpha,
+            regularization_strength
+    ):
+        """
+        Compute the log likelihood /fidelity penalty for the water fraction.
+
+        Parameters
+        ----------
+        alpha : torch.Tensor
+            Current mode-dependent log-scale corrections.
+        regularization_strength : float
+            Weight of the penalty term.
+        gamma : float, optional
+            Softness parameter for the binary water fraction operator.
+        wf_threshold : float, optional
+            Threshold for the water fraction.
+
+        Returns
+        -------
+        torch.Tensor
+            The computed water fraction penalty.
+        """
+        wf_binary = self._simulated_waterfraction(
+            alpha
+        )
+
+        # take log and sum all of them
+        penalty = -torch.log(wf_binary + 1e-12).sum()
+
+        return regularization_strength * penalty
+
+
 
     @staticmethod
     def smooth_elastic_net(
@@ -484,7 +615,8 @@ class PriorCorrection:
     def objective(
         self,
         alpha,
-        regularization_strength,
+        rho_e,
+        rho_w,
         l1_ratio,
         smoothing_epsilon,
     ):
@@ -496,18 +628,25 @@ class PriorCorrection:
         """
         data_misfit = 0.5 * self.mahalanobis(alpha)
 
-        penalty = self.smooth_elastic_net(
+        penalty_e = self.smooth_elastic_net(
             alpha=alpha,
-            regularization_strength=regularization_strength,
+            regularization_strength=rho_e,
             l1_ratio=l1_ratio,
             smoothing_epsilon=smoothing_epsilon,
         )
 
-        return data_misfit + penalty
+        penalty_wf = self.water_fraction_penalty(
+            alpha=alpha,
+            regularization_strength=rho_w,
+            wf_threshold=self.wf_threshold,
+        )
+
+        return data_misfit + penalty_e + penalty_wf
 
     def solve_MAP(
         self,
-        regularization_strength,
+        rho_e,
+        rho_w,
         sigma_sq,
         l1_ratio=0.9,
         smoothing_epsilon=1.0e-6,
@@ -519,15 +658,17 @@ class PriorCorrection:
         tolerance_grad=1.0e-7,
         tolerance_change=1.0e-9,
         show_progress=True,
-        use_line_search=True,
+        active_modes=None,
     ):
         """
         Solve the smooth elastic-net MAP problem using L-BFGS.
 
         Parameters
         ----------
-        regularization_strength : float
-            Overall elastic-net weight.
+        rho_e : float
+            Elastic-net regularization strength.
+        rho_w : float
+            Water-fraction regularization strength.
         sigma_sq : float or torch.Tensor
             Isotropic residual variance.
         l1_ratio : float, optional
@@ -555,7 +696,7 @@ class PriorCorrection:
             Use strong-Wolfe line search. Disabling it greatly reduces
             closure evaluations but can make optimization less robust.
         """
-        self._initialize_alpha()
+        self._initialize_alpha(active_modes=active_modes)
         self._prepare_observed_domain()
 
         if max_iter < 1:
@@ -572,7 +713,7 @@ class PriorCorrection:
         )
 
         optimizer = optim.LBFGS(
-            [self.alpha],
+            [self.alpha_free],
             lr=lr,
             max_iter=1,
             max_eval=1,
@@ -608,10 +749,12 @@ class PriorCorrection:
             nonlocal closure_evaluations
 
             optimizer.zero_grad(set_to_none=True)
+            alpha_full = self._full_alpha()
 
             loss = self.objective(
-                alpha=self.alpha,
-                regularization_strength=regularization_strength,
+                alpha=alpha_full,
+                rho_e=rho_e,
+                rho_w=rho_w,
                 l1_ratio=l1_ratio,
                 smoothing_epsilon=smoothing_epsilon,
             )
@@ -642,9 +785,12 @@ class PriorCorrection:
                 # This forward evaluation is not counted as a line-search
                 # closure evaluation.
                 with torch.no_grad():
+                    alpha_full = self._full_alpha()
+
                     current_loss = self.objective(
-                        alpha=self.alpha,
-                        regularization_strength=regularization_strength,
+                        alpha=alpha_full,
+                        rho_e=rho_e,
+                        rho_w=rho_w,
                         l1_ratio=l1_ratio,
                         smoothing_epsilon=smoothing_epsilon,
                     )
@@ -656,22 +802,25 @@ class PriorCorrection:
                 # evaluated exactly at the final accepted alpha.
                 optimizer.zero_grad(set_to_none=True)
 
+                alpha_full = self._full_alpha()
+
                 diagnostic_loss = self.objective(
-                    alpha=self.alpha,
-                    regularization_strength=regularization_strength,
+                    alpha=alpha_full,
+                    rho_e=rho_e,
+                    rho_w=rho_w,
                     l1_ratio=l1_ratio,
                     smoothing_epsilon=smoothing_epsilon,
                 )
                 diagnostic_loss.backward()
 
                 gradient_norm = (
-                    self.alpha.grad.detach()
+                    self.alpha_free.grad.detach()
                     .abs()
                     .max()
                     .item()
                 )
 
-                alpha_norm = self.alpha.detach().norm().item()
+                alpha_norm = alpha_full.detach().norm().item()
 
                 if previous_loss is None:
                     loss_change = float("inf")
@@ -718,36 +867,44 @@ class PriorCorrection:
         optimizer.zero_grad(set_to_none=True)
 
         with torch.no_grad():
+            final_alpha = self._full_alpha()
+            self.alpha = final_alpha.detach().clone()
+
             final_loss = self.objective(
-                alpha=self.alpha,
-                regularization_strength=regularization_strength,
+                alpha=final_alpha,
+                rho_e=rho_e,
+                rho_w=rho_w,
                 l1_ratio=l1_ratio,
                 smoothing_epsilon=smoothing_epsilon,
             )
 
-            final_mahalanobis = self.mahalanobis(self.alpha)
+            final_mahalanobis = self.mahalanobis(final_alpha)
 
             final_penalty = self.smooth_elastic_net(
-                alpha=self.alpha,
-                regularization_strength=regularization_strength,
+                alpha=final_alpha,
+                rho_e=rho_e,
+                rho_w=rho_w,
                 l1_ratio=l1_ratio,
                 smoothing_epsilon=smoothing_epsilon,
             )
 
-        result = {
-            "alpha": self.alpha.detach().clone(),
-            "scale": torch.exp(self.alpha.detach()).clone(),
-            "loss": final_loss.detach().clone(),
-            "mahalanobis": final_mahalanobis.detach().clone(),
-            "regularization_penalty": final_penalty.detach().clone(),
-            "covariance_rank": self.cov_rank,
-            "singular_values": self.cov_singular_values.clone(),
-            "logdet_S": self.logdet_S.clone(),
-            "iterations": len(loss_history),
-            "closure_evaluations": closure_evaluations,
-            "loss_history": loss_history,
-            "gradient_history": gradient_history,
-            "convergence_reason": convergence_reason,
-        }
+
+            result = {
+                "alpha": self.alpha.clone(),
+                "alpha_free": self.alpha_free.detach().clone(),
+                "active_modes": self.active_modes.detach().clone(),
+                "scale": torch.exp(self.alpha).clone(),
+                "loss": final_loss.detach().clone(),
+                "mahalanobis": final_mahalanobis.detach().clone(),
+                "regularization_penalty": final_penalty.detach().clone(),
+                "covariance_rank": self.cov_rank,
+                "singular_values": self.cov_singular_values.clone(),
+                "logdet_S": self.logdet_S.clone(),
+                "iterations": len(loss_history),
+                "closure_evaluations": closure_evaluations,
+                "loss_history": loss_history,
+                "gradient_history": gradient_history,
+                "convergence_reason": convergence_reason,
+            }
 
         return result

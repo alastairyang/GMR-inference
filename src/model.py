@@ -830,7 +830,7 @@ class model:
             plt.show()
         return z_optimal, residual_latent, residual_recon, residual
     
-    def compute_MAP(self, beta=1, beta_w=1, n_iter=20, lr=0.5, show_plot=True, show_trajectory=False):
+    def compute_MAP(self, beta=1, beta_w=0.001, n_iter=20, lr=0.5, show_plot=True, show_trajectory=False):
         """ 
         Compute the Maximum A Posteriori
         """

@@ -3,7 +3,7 @@ import numpy as np
 from gmr import MVN
 from src.ice import enthalpy_to_temperature, enthalpy_to_water_fraction
 from src.utilities import reverse_standardize, shape_check
-from src.observationOperator import latent_operator_enthalpy 
+# from src.observationOperator import latent_operator_enthalpy 
 # import pytorch for AD
 import torch
 import scipy as sp

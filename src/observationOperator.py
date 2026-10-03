@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import torch.nn.functional as F
-from src.ice import enthalpy_to_temperature
+from src.ice import enthalpy_to_temperature, enthalpy_to_water_fraction
 from src.utilities import reverse_standardize
 
 # this script defines the observation operator
@@ -10,7 +10,101 @@ from src.utilities import reverse_standardize
 # ----
 # We write everything in torch for AD uses 
 # ----
-def latent_operator_enthalpy(
+def latent_input_check(V, Eb_star, method=None, epsilon=None):
+    """
+    Checking the dimensions and compatibility of the latent input tensors.
+    """
+    if epsilon is None and method == "relaxation":
+        raise ValueError(
+            "epsilon must be provided for the relaxation method."
+        )
+
+    if V.ndim != 2:
+        raise ValueError("V must be a two-dimensional tensor.")
+
+    if Eb_star.ndim != 2:
+        raise ValueError(
+            "Eb_star must be a two-dimensional tensor."
+        )
+
+    if V.shape[0] != Eb_star.shape[0]:
+        raise ValueError(
+            "The latent dimension of V must match the first "
+            "dimension of Eb_star."
+        )
+    return True
+
+def latent_waterfraction_operator_enthalpy(
+    V,
+    Eb_star,
+    Eb_mean,
+    Eb_std,
+    Tpmp,
+    method,
+    epsilon=None,
+):
+    """
+    Vectorized obs. operator ...
+        mapping from latent PCA coefficients to water fraction.
+
+    Parameters
+    ----------
+    V : torch.Tensor
+        PCA component matrix with shape:
+
+            (n_latent_features, n_physical_features)
+
+    Eb_star : torch.Tensor
+        Latent PCA coefficients with shape:
+
+            (n_latent_features, n_samples)
+
+    Eb_mean : torch.Tensor
+        Mean enthalpy with shape:
+
+            (n_physical_features,)
+
+    Eb_std : torch.Tensor
+        Enthalpy standard deviation with shape:
+
+            (n_physical_features,)
+
+    Tpmp : torch.Tensor
+        Pressure-melting-point temperature with shape:
+
+            (n_physical_features,)
+
+    method : str
+        Reverse-standardization method.
+
+    epsilon : float, optional
+        Relaxation constant.
+    """
+    latent_input_check(V, Eb_star, method=method, epsilon=epsilon)
+
+    Eb = V.T @ Eb_star
+
+    Eb_mean_column = Eb_mean.reshape(-1, 1)
+    Eb_std_column = Eb_std.reshape(-1, 1)
+    Tpmp_column = Tpmp.reshape(-1, 1)
+
+    Eb_original = reverse_standardize(
+        Eb,
+        Eb_mean_column,
+        Eb_std_column,
+        method=method,
+        epsilon=epsilon,
+    )
+
+    wf = enthalpy_to_water_fraction(
+        Eb_original,
+        Tpmp_column,
+    )
+    
+    return wf
+
+
+def latent_temperature_operator_enthalpy(
     V,
     Eb_star,
     Eb_mean,
@@ -55,24 +149,7 @@ def latent_operator_enthalpy(
     epsilon : float, optional
         Relaxation constant.
     """
-    if epsilon is None and method == "relaxation":
-        raise ValueError(
-            "epsilon must be provided for the relaxation method."
-        )
-
-    if V.ndim != 2:
-        raise ValueError("V must be a two-dimensional tensor.")
-
-    if Eb_star.ndim != 2:
-        raise ValueError(
-            "Eb_star must be a two-dimensional tensor."
-        )
-
-    if V.shape[0] != Eb_star.shape[0]:
-        raise ValueError(
-            "The latent dimension of V must match the first "
-            "dimension of Eb_star."
-        )
+    latent_input_check(V, Eb_star, method=method, epsilon=epsilon)
 
     # Reconstruct every simulation simultaneously.
     #
@@ -109,49 +186,13 @@ def latent_operator_enthalpy(
 
     return delta_T
 
-def latent_operator_enthalpy_loop(
-    V,
-    Eb_star,
-    Eb_mean,
-    Eb_std,
-    Tpmp,
-    method,
-    epsilon=None,
-):
-    if epsilon is None and method == "relaxation":
-        raise ValueError(
-            "epsilon must be provided for the relaxation method."
-        )
-
-    Eb = V.T @ Eb_star
-    n_sample = Eb_star.shape[1]
-
-    Tb_ori = torch.zeros_like(Eb)
-
-    for ii in range(n_sample):
-        Eb_ori = reverse_standardize(
-            Eb[:, ii],
-            Eb_mean,
-            Eb_std,
-            method=method,
-            epsilon=epsilon,
-        )
-
-        Tb_ori[:, ii] = enthalpy_to_temperature(
-            Eb_ori,
-            Tpmp,
-        )
-
-    delta_T = Tpmp[:, None] - Tb_ori
-    return delta_T
-
 def operator_temperature(Tb, Tpmp):
     """
     Observation operator directly on temperature in its physical unit and domain
     """
     return Tpmp - Tb
 
-def binary_hard_operator(delta_T, dT_cutoff, mask=None):
+def temperature_binary_hard_operator(delta_T, dT_cutoff, mask=None):
     """
     A simple binary operator that classifies whether the base is thawed or frozen
     based on degree to melting point. Thresholds are user input to acknowledge 
@@ -185,11 +226,14 @@ def binary_hard_operator(delta_T, dT_cutoff, mask=None):
     return binary_class
 
 
-def binary_soft_operator(
+def temperature_binary_soft_operator(
     delta_T,
     beta,
     clamp_sharpness=20.0,
 ):
+    """
+    Soft binary classification operator for thawed and frozen base. 
+    """
     if beta <= 0:
         raise ValueError("beta must be strictly positive.")
 
@@ -207,3 +251,33 @@ def binary_soft_operator(
     )
 
     return torch.exp(-positive_delta / beta)
+
+def waterfraction_binary_soft_operator(
+    water_fraction,
+    beta,
+    wf_threshold = 0.02,
+    eps = 0.01
+):
+    """
+    Soft binary classification operator for water fraction 
+    where we consider water fraction above a certain threshold
+    to be physically unrealistic
+
+    Parameters
+    ----------
+    water_fraction : torch.Tensor, (n_physical_feature, n_sample)
+        Water fraction values.
+    beta : float
+        Positive; parameter controlling the softness of the classification.
+    wf_threshold : float
+        Threshold for water fraction above which it is considered physically unrealistic.
+    eps : float
+        Small positive value to avoid numerical issues.
+
+    Returns
+    -------
+    soft_class : torch.Tensor
+        Soft classification of water fraction, values between 0 and 1.
+    """
+
+    return 1 / (1 + torch.exp((1/beta) * (water_fraction - wf_threshold))) + eps
