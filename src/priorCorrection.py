@@ -547,8 +547,8 @@ class PriorCorrection:
             alpha
         )
 
-        # take log and sum all of them
-        penalty = -torch.log(wf_binary + 1e-12).sum()
+        # take log and sum all of them divided by number of elements across simulations
+        penalty = -torch.log(wf_binary + 1e-12).mean()
 
         return regularization_strength * penalty
 
@@ -637,8 +637,7 @@ class PriorCorrection:
 
         penalty_wf = self.water_fraction_penalty(
             alpha=alpha,
-            regularization_strength=rho_w,
-            wf_threshold=self.wf_threshold,
+            regularization_strength=rho_w
         )
 
         return data_misfit + penalty_e + penalty_wf
@@ -880,13 +879,17 @@ class PriorCorrection:
 
             final_mahalanobis = self.mahalanobis(final_alpha)
 
-            final_penalty = self.smooth_elastic_net(
+            final_penalty_e = self.smooth_elastic_net(
                 alpha=final_alpha,
-                rho_e=rho_e,
-                rho_w=rho_w,
+                regularization_strength=rho_e,
                 l1_ratio=l1_ratio,
                 smoothing_epsilon=smoothing_epsilon,
             )
+            final_penalty_w = self.water_fraction_penalty(
+                alpha=final_alpha,
+                regularization_strength=rho_w
+            )
+
 
 
             result = {
@@ -896,7 +899,8 @@ class PriorCorrection:
                 "scale": torch.exp(self.alpha).clone(),
                 "loss": final_loss.detach().clone(),
                 "mahalanobis": final_mahalanobis.detach().clone(),
-                "regularization_penalty": final_penalty.detach().clone(),
+                "regularization_penalty_e": final_penalty_e.detach().clone(),
+                "regularization_penalty_w": final_penalty_w.detach().clone(),
                 "covariance_rank": self.cov_rank,
                 "singular_values": self.cov_singular_values.clone(),
                 "logdet_S": self.logdet_S.clone(),
