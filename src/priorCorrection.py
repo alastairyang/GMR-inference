@@ -862,15 +862,17 @@ class PriorCorrection:
             alpha
         )
 
-        normalized_exceedance = (
-            water_fraction - self.wf_threshold
-        ) / self.gamma_wf
-
-        pointwise_penalty = F.softplus(
-            normalized_exceedance
+        pointwise_penalty = waterfraction_binary_soft_operator(
+            water_fraction,
+            self.gamma_wf,
+            self.wf_threshold,
         )
 
-        return rho_w * pointwise_penalty.mean()
+        mean_term = pointwise_penalty.square().mean()
+        peak_term = pointwise_penalty.square().max()
+
+        return rho_w * (mean_term + peak_term)
+
 
     # ------------------------------------------------------------------
     # Objective

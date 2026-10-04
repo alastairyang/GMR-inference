@@ -291,7 +291,7 @@ def low_high_joint_percentile(samples, log_probs, low_percentile=5, high_percent
     high_bound = samples_sorted[idx_high]  
     return low_bound, high_bound
 
-def low_high_marginal_percentile(samples, low_percentile=5, high_percentile=95):
+def low_mean_high_marginal_percentile(samples, low_percentile=5, high_percentile=95):
     """
     Compute marginal percentile bounds across all features independently.
 
@@ -308,13 +308,20 @@ def low_high_marginal_percentile(samples, low_percentile=5, high_percentile=95):
     -------
     low_bound : array, shape (n_features,)
         Marginal low_percentile bound per feature.
+    mean_bound : array, shape (n_features,)
+        Marginal mean per feature.
     high_bound : array, shape (n_features,)
         Marginal high_percentile bound per feature.
     """
-    low_bound  = np.percentile(samples, low_percentile,  axis=0)
-    high_bound = np.percentile(samples, high_percentile, axis=0)
-    return low_bound, high_bound
+    import torch
+    if isinstance(samples, torch.Tensor):
+        samples = samples.detach().cpu().numpy()
 
+    low_bound = np.percentile(samples, low_percentile, axis=0)
+    mean_bound = np.mean(samples, axis=0)
+    high_bound = np.percentile(samples, high_percentile, axis=0)
+
+    return low_bound, mean_bound, high_bound
 
 def read_exp(filepath):
     """
