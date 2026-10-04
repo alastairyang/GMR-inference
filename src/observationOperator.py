@@ -1,3 +1,4 @@
+from numpy.random import beta
 import torch
 import numpy as np
 import torch.nn.functional as F
@@ -254,30 +255,19 @@ def temperature_binary_soft_operator(
 
 def waterfraction_binary_soft_operator(
     water_fraction,
-    beta,
+    gamma,
     wf_threshold = 0.02,
-    eps = 0.01
 ):
     """
     Soft binary classification operator for water fraction 
     where we consider water fraction above a certain threshold
     to be physically unrealistic
-
-    Parameters
-    ----------
-    water_fraction : torch.Tensor, (n_physical_feature, n_sample)
-        Water fraction values.
-    beta : float
-        Positive; parameter controlling the softness of the classification.
-    wf_threshold : float
-        Threshold for water fraction above which it is considered physically unrealistic.
-    eps : float
-        Small positive value to avoid numerical issues.
-
-    Returns
-    -------
-    soft_class : torch.Tensor
-        Soft classification of water fraction, values between 0 and 1.
     """
+    if gamma <= 0:
+        raise ValueError("gamma must be strictly positive.")
 
-    return 1 / (1 + torch.exp((1/beta) * (water_fraction - wf_threshold))) + eps
+    normalized_exceedance = (water_fraction - wf_threshold) / gamma
+
+    pointwise_prob = F.softplus(normalized_exceedance)
+
+    return pointwise_prob

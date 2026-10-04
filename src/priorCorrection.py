@@ -1,6 +1,7 @@
 import math
 
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 from tqdm.auto import tqdm
 
@@ -14,43 +15,75 @@ from src.observationOperator import (
 
 class PriorCorrection:
     """
-    Estimate mode-dependent multiplicative corrections to PCA coefficients.
+    Estimate additive corrections in standardized PCA coordinates.
 
-    The corrected coefficients are
+    Let lambda_i^j be the raw PCA coefficient for mode i and simulation j,
+    and let nu_i denote the explained variance of mode i.
 
-        Eb_star_corrected = Eb_star * exp(alpha),
+    The standardized PCA score is
 
-    where alpha has one entry per retained PCA mode. Negative alpha values
-    contract a mode, while positive alpha values inflate it.
+        z_i^j = lambda_i^j / sqrt(nu_i).
 
-    The covariance of the simulated evidence is computed once at a fixed
-    reference value of alpha and held constant during optimization.
+    The corrected standardized score is
+
+        z_i^{j,*} = z_i^j + alpha_i,
+
+    which corresponds to the corrected raw coefficient
+
+        lambda_i^{j,*}
+            = lambda_i^j + sqrt(nu_i) * alpha_i.
+
+    Therefore, alpha_i represents a modal mean shift measured in standard
+    deviations of PCA mode i.
+
+    The covariance of the simulated thermal-state evidence is computed once
+    at a fixed reference alpha and held constant during optimization.
     """
 
-    def __init__(self, gamma_wf = 0.005, wf_threshold = 0.02):
+    def __init__(
+        self,
+        gamma_wf=0.005,
+        wf_threshold=0.02,
+    ):
+        if gamma_wf <= 0.0:
+            raise ValueError("gamma_wf must be strictly positive.")
+
+        self.gamma_wf = float(gamma_wf)
+        self.wf_threshold = float(wf_threshold)
+
+        # Full standardized correction vector after optimization.
         self.alpha = None
 
-        # water fraction penalty terms
-        self.gamma_wf = gamma_wf
-        self.wf_threshold = wf_threshold
+        # Reduced optimization vector and active-mode indices.
+        self.alpha_free = None
+        self.active_modes = None
 
-        # Fixed-covariance SVD factors
+        # PCA quantities.
+        self.V = None
+        self.Eb_star = None
+        self.Eb_star_standardized = None
+        self.explained_variance = None
+        self.score_std = None
+
+        # Fixed covariance SVD factors.
         self.cov_singular_values = None
         self.cov_Vh = None
         self.cov_rank = None
 
-        # Quantities depending on fixed sigma_sq
+        # Quantities depending on fixed sigma_sq.
         self.sigma_sq = None
         self.woodbury_weights = None
         self.logdet_S = None
-        self.alpha_free = None
-        self.active_modes = None
 
+    # ------------------------------------------------------------------
+    # Data loading
+    # ------------------------------------------------------------------
 
     def load_simulation_var(
         self,
         V,
         Eb_star,
+        explained_variance,
         Eb_mean,
         Eb_std,
         Tpmp,
@@ -58,44 +91,145 @@ class PriorCorrection:
         epsilon,
     ):
         """
-        Load the simulated PCA coefficients and reconstruction variables.
+        Load PCA scores and physical reconstruction variables.
 
         Parameters
         ----------
         V : torch.Tensor
-            PCA basis used to reconstruct the basal enthalpy field.
+            PCA basis with shape
+
+                (n_modes, n_locations).
+
+            Each row is one retained PCA mode.
+
         Eb_star : torch.Tensor
-            PCA coefficients with shape (K, r_E), where K is the number
-            of simulations and r_E is the number of retained PCA modes.
+            Raw PCA coefficients with shape
+
+                (n_modes, n_simulations).
+
+        explained_variance : torch.Tensor
+            Explained variance for each retained PCA mode, with shape
+
+                (n_modes,).
+
+            The standardized scores are computed internally as
+
+                Eb_star / sqrt(explained_variance).
+
         Eb_mean, Eb_std : torch.Tensor
-            Quantities used to invert the standardization.
+            Quantities used to invert the spatial standardization of the
+            basal enthalpy field.
+
         Tpmp : torch.Tensor
             Pressure-melting-point temperature field.
+
         method
-            Standardization method passed to latent_operator_enthalpy.
+            Standardization method passed to the latent observation
+            operators.
+
         epsilon
-            Relaxation constant passed to latent_operator_enthalpy.
+            Relaxation constant passed to the latent observation operators.
         """
+        if not torch.is_tensor(Eb_star):
+            raise TypeError("Eb_star must be a torch.Tensor.")
+
+        if not Eb_star.is_floating_point():
+            raise TypeError("Eb_star must have a floating-point dtype.")
+
         if Eb_star.ndim != 2:
             raise ValueError(
-                "Eb_star must have shape (K, r_E), with simulations "
-                "along the first dimension and PCA modes along the last."
+                "Eb_star must have shape "
+                "(n_modes, n_simulations)."
+            )
+
+        if V.ndim != 2:
+            raise ValueError(
+                "V must have shape (n_modes, n_locations)."
+            )
+
+        n_modes, n_simulations = Eb_star.shape
+
+        if V.shape[0] != n_modes:
+            raise ValueError(
+                "The first dimension of V must equal the first "
+                "dimension of Eb_star. "
+                f"Received V.shape={tuple(V.shape)} and "
+                f"Eb_star.shape={tuple(Eb_star.shape)}."
+            )
+
+        explained_variance = torch.as_tensor(
+            explained_variance,
+            dtype=Eb_star.dtype,
+            device=Eb_star.device,
+        )
+
+        if explained_variance.ndim != 1:
+            raise ValueError(
+                "explained_variance must be one-dimensional."
+            )
+
+        if explained_variance.shape[0] != n_modes:
+            raise ValueError(
+                "explained_variance must contain one value per PCA mode. "
+                f"Expected {n_modes} values but received "
+                f"{explained_variance.shape[0]}."
+            )
+
+        if not torch.isfinite(explained_variance).all():
+            raise ValueError(
+                "explained_variance contains NaN or infinite values."
+            )
+
+        if torch.any(explained_variance <= 0.0):
+            bad_modes = torch.nonzero(
+                explained_variance <= 0.0,
+                as_tuple=False,
+            ).flatten()
+
+            raise ValueError(
+                "All retained explained variances must be strictly "
+                f"positive. Invalid mode indices: {bad_modes.tolist()}."
+            )
+
+        if not torch.isfinite(Eb_star).all():
+            raise ValueError(
+                "Eb_star contains NaN or infinite values."
+            )
+
+        if not torch.isfinite(V).all():
+            raise ValueError(
+                "V contains NaN or infinite values."
             )
 
         self.V = V
         self.Eb_star = Eb_star
+
+        self.explained_variance = (
+            explained_variance.detach().clone()
+        )
+
+        # Standard deviation of each PCA score.
+        self.score_std = torch.sqrt(
+            self.explained_variance
+        )
+
+        # Standardized PCA scores. This is mostly useful for diagnostics.
+        self.Eb_star_standardized = (
+            self.Eb_star / self.score_std[:, None]
+        )
+
         self.Eb_mean = Eb_mean
         self.Eb_std = Eb_std
         self.Tpmp = Tpmp
         self.method = method
         self.epsilon = epsilon
 
-        self.n_simulations = Eb_star.shape[1]
-        self.n_modes = Eb_star.shape[0]
+        self.n_modes = n_modes
+        self.n_simulations = n_simulations
 
     def load_observation(self, base, beta=1.0):
         """
-        Load the observed basal thermal-state evidence.
+        Load observed basal thermal-state evidence.
 
         Parameters
         ----------
@@ -106,29 +240,43 @@ class PriorCorrection:
                 0   : frozen
                 NaN : unobserved
 
-            The spatial dimensions are flattened internally.
+            Spatial dimensions are flattened internally.
+
         beta : float, optional
-            Parameter passed to binary_soft_operator. For gradient-based
-            optimization, binary_soft_operator must implement a continuous,
-            differentiable soft-classification map.
-            differentiable soft-classification map.
+            Temperature scale passed to the differentiable binary
+            observation operator.
+        gamma : float, optional
+            Scale parameter passed to the differentiable binary
+            water fraction observation operator.
         """
+        if beta <= 0.0:
+            raise ValueError("beta must be strictly positive.")
+
         self.base = base
         self.mask = ~torch.isnan(base)
-        self.beta = beta
+        self.beta = float(beta)
         self.n_obs = int(self.mask.sum().item())
 
         if self.n_obs == 0:
             raise ValueError("No valid observations were provided.")
 
+    # ------------------------------------------------------------------
+    # Parameterization
+    # ------------------------------------------------------------------
+
     def _initialize_alpha(self, active_modes=None):
         """
-        Initialize correction parameters only for selected PCA modes.
+        Initialize standardized additive corrections.
 
         Parameters
         ----------
         active_modes : sequence of int, optional
-            Indices of modes allowed to change. If None, all modes are active.
+            PCA modes allowed to change. If omitted, all retained PCA
+            modes are optimized.
+
+        Notes
+        -----
+        Inactive modes remain at alpha_i = 0.
         """
         if active_modes is None:
             active_modes = torch.arange(
@@ -144,25 +292,34 @@ class PriorCorrection:
             )
 
         if active_modes.ndim != 1:
-            raise ValueError("active_modes must be one-dimensional.")
+            raise ValueError(
+                "active_modes must be one-dimensional."
+            )
 
         if active_modes.numel() == 0:
-            raise ValueError("At least one active mode must be selected.")
+            raise ValueError(
+                "At least one active mode must be selected."
+            )
 
         if (
             active_modes.min().item() < 0
             or active_modes.max().item() >= self.n_modes
         ):
             raise ValueError(
-                f"Mode indices must lie between 0 and {self.n_modes - 1}."
+                "Mode indices must lie between 0 and "
+                f"{self.n_modes - 1}."
             )
 
-        if torch.unique(active_modes).numel() != active_modes.numel():
-            raise ValueError("active_modes contains duplicate indices.")
+        if (
+            torch.unique(active_modes).numel()
+            != active_modes.numel()
+        ):
+            raise ValueError(
+                "active_modes contains duplicate indices."
+            )
 
         self.active_modes = active_modes
 
-        # Only these entries are passed to the optimizer.
         self.alpha_free = torch.nn.Parameter(
             torch.zeros(
                 active_modes.numel(),
@@ -173,10 +330,15 @@ class PriorCorrection:
 
     def _full_alpha(self):
         """
-        Insert optimized parameters into a full-length alpha vector.
+        Construct the full standardized correction vector.
 
-        Inactive modes remain zero, corresponding to exp(alpha) = 1.
+        Inactive modes remain exactly zero.
         """
+        if self.alpha_free is None:
+            raise RuntimeError(
+                "The optimization parameters have not been initialized."
+            )
+
         alpha_full = torch.zeros(
             self.n_modes,
             dtype=self.alpha_free.dtype,
@@ -189,12 +351,59 @@ class PriorCorrection:
             self.alpha_free,
         )
 
+    def _corrected_coefficients(self, alpha):
+        """
+        Convert standardized additive corrections into raw PCA scores.
 
+        Parameters
+        ----------
+        alpha : torch.Tensor
+            Standardized additive correction with shape (n_modes,).
+
+        Returns
+        -------
+        torch.Tensor
+            Corrected raw PCA coefficients with shape
+
+                (n_modes, n_simulations).
+        """
+        if alpha.shape != (self.n_modes,):
+            raise ValueError(
+                f"alpha must have shape ({self.n_modes},), "
+                f"but received {tuple(alpha.shape)}."
+            )
+
+        # alpha_i is measured in standard deviations of mode i.
+        raw_coefficient_shift = (
+            self.score_std * alpha
+        )
+
+        # The same modal mean shift is applied to every ensemble member.
+        corrected = (
+            self.Eb_star
+            + raw_coefficient_shift[:, None]
+        )
+
+        return corrected
+
+    # ------------------------------------------------------------------
+    # Observation-domain preparation
+    # ------------------------------------------------------------------
 
     def _prepare_observed_domain(self):
         """
-        Cache all simulation quantities at observed spatial locations.
+        Cache reconstruction quantities at observed spatial locations.
         """
+        if self.V is None:
+            raise RuntimeError(
+                "Simulation variables must be loaded before solve_MAP."
+            )
+
+        if not hasattr(self, "mask"):
+            raise RuntimeError(
+                "Observations must be loaded before solve_MAP."
+            )
+
         flat_mask = self.mask.reshape(-1)
 
         if self.V.shape[1] != flat_mask.numel():
@@ -208,13 +417,28 @@ class PriorCorrection:
 
         self.Eb_mean_observed = (
             self.Eb_mean.reshape(-1)[flat_mask]
+            .to(
+                dtype=self.Eb_star.dtype,
+                device=self.Eb_star.device,
+            )
         )
+
         self.Eb_std_observed = (
             self.Eb_std.reshape(-1)[flat_mask]
+            .to(
+                dtype=self.Eb_star.dtype,
+                device=self.Eb_star.device,
+            )
         )
+
         self.Tpmp_observed = (
             self.Tpmp.reshape(-1)[flat_mask]
+            .to(
+                dtype=self.Eb_star.dtype,
+                device=self.Eb_star.device,
+            )
         )
+
         self.base_observed = (
             self.base.reshape(-1)[flat_mask]
             .to(
@@ -223,32 +447,24 @@ class PriorCorrection:
             )
         )
 
+    # ------------------------------------------------------------------
+    # Forward operators
+    # ------------------------------------------------------------------
 
     def _simulated_obs(self, alpha):
         """
-        Compute soft evidence only at observed locations.
+        Compute soft thermal-state evidence at observed locations.
 
         Returns
         -------
         torch.Tensor
-            Simulated evidence with shape:
+            Simulated evidence with shape
 
-                (n_simulations, n_observations)
+                (n_simulations, n_observations).
         """
-        if alpha.shape != (self.n_modes,):
-            raise ValueError(
-                f"alpha must have shape ({self.n_modes},), "
-                f"but received {tuple(alpha.shape)}."
-            )
+        Eb_star_corrected = self._corrected_coefficients(alpha)
 
-        scale = torch.exp(alpha)
-
-        # Shape: (n_modes, n_simulations)
-        Eb_star_corrected = (
-            self.Eb_star * scale[:, None]
-        )
-
-        # Output shape:
+        # Expected output shape:
         #     (n_observations, n_simulations)
         delta_T_observed = latent_temperature_operator_enthalpy(
             self.V_observed,
@@ -265,25 +481,24 @@ class PriorCorrection:
             self.beta,
         )
 
-        # Return shape:
+        # Return:
         #     (n_simulations, n_observations)
         return simulated_evidence.T
 
     def _simulated_waterfraction(self, alpha):
         """
-        Compute the simulated water fraction across the whole domain
-        """
-        if alpha.shape != (self.n_modes,):
-            raise ValueError(
-                f"alpha must have shape ({self.n_modes},), "
-                f"but received {tuple(alpha.shape)}."
-            )
-        scale = torch.exp(alpha)
-        Eb_star_corrected = (
-            self.Eb_star * scale[:, None]
-        )
+        Compute physical water fraction over the full domain.
 
-        wf_sim = latent_waterfraction_operator_enthalpy(
+        Returns
+        -------
+        torch.Tensor
+            Simulated water-fraction fields. The precise dimensions
+            depend on the latent observation operator, but should include
+            simulations and spatial locations.
+        """
+        Eb_star_corrected = self._corrected_coefficients(alpha)
+
+        water_fraction = latent_waterfraction_operator_enthalpy(
             self.V,
             Eb_star_corrected,
             self.Eb_mean,
@@ -293,13 +508,7 @@ class PriorCorrection:
             self.epsilon,
         )
 
-        wf_binary = waterfraction_binary_soft_operator(
-            wf_sim,
-            self.gamma_wf,
-            self.wf_threshold,
-        )
-
-        return wf_binary
+        return water_fraction
 
     def _observed_simulated_evidence(self, alpha):
         Omega = self._simulated_obs(alpha)
@@ -317,31 +526,39 @@ class PriorCorrection:
 
         return Omega
 
+    # ------------------------------------------------------------------
+    # Fixed covariance metric
+    # ------------------------------------------------------------------
 
-    def _covariance_matrix(self, alpha_ref=None, rank_tolerance=None):
+    def _covariance_matrix(
+        self,
+        alpha_ref=None,
+        rank_tolerance=None,
+    ):
         """
-        Precompute the compact SVD of the centered evidence matrix.
+        Compute the compact SVD of the fixed centered evidence matrix.
 
-        The fixed centered matrix is
+        The centered reference evidence is
 
-            C_ref = (Omega_ref - 1_K mean(Omega_ref)^T) / sqrt(K - 1).
+            C_ref = (Omega_ref - mean(Omega_ref)) / sqrt(K - 1).
 
-        The fixed covariance is represented implicitly as
+        The covariance is represented implicitly as
 
             S = C_ref.T @ C_ref + sigma_sq * I.
 
         Parameters
         ----------
         alpha_ref : torch.Tensor, optional
-            Reference correction vector. By default, alpha_ref = 0, which
-            corresponds to the uncorrected ensemble.
+            Reference standardized additive correction. The default is
+            alpha_ref = 0.
+
         rank_tolerance : float, optional
-            Singular values smaller than this threshold are discarded.
-            If omitted, a standard numerical-rank tolerance is used.
+            Singular values below this threshold are discarded.
         """
         if self.n_simulations < 2:
             raise ValueError(
-                "At least two simulations are required to estimate covariance."
+                "At least two simulations are required to estimate "
+                "the covariance."
             )
 
         if alpha_ref is None:
@@ -363,22 +580,25 @@ class PriorCorrection:
                 f"but received {tuple(alpha_ref.shape)}."
             )
 
-        # The covariance is deliberately detached from optimization.
         with torch.no_grad():
-            Omega_ref = self._observed_simulated_evidence(alpha_ref)
-            mean_ref = Omega_ref.mean(dim=0, keepdim=True)
+            Omega_ref = self._observed_simulated_evidence(
+                alpha_ref
+            )
+
+            mean_ref = Omega_ref.mean(
+                dim=0,
+                keepdim=True,
+            )
 
             C_ref = (
                 Omega_ref - mean_ref
             ) / math.sqrt(self.n_simulations - 1)
 
-            # C_ref has shape (K, d).
             _, singular_values, Vh = torch.linalg.svd(
                 C_ref,
                 full_matrices=False,
             )
 
-            # Remove numerically zero singular values.
             if singular_values.numel() == 0:
                 keep = torch.zeros(
                     0,
@@ -392,10 +612,19 @@ class PriorCorrection:
                         * torch.finfo(C_ref.dtype).eps
                         * singular_values.max()
                     )
+                else:
+                    rank_tolerance = torch.as_tensor(
+                        rank_tolerance,
+                        dtype=C_ref.dtype,
+                        device=C_ref.device,
+                    )
 
                 keep = singular_values > rank_tolerance
 
-            self.cov_singular_values = singular_values[keep].detach()
+            self.cov_singular_values = (
+                singular_values[keep].detach()
+            )
+
             self.cov_Vh = Vh[keep, :].detach()
             self.cov_rank = int(keep.sum().item())
             self.n_evidence = C_ref.shape[1]
@@ -412,7 +641,7 @@ class PriorCorrection:
         rank_tolerance=None,
     ):
         """
-        Precompute all fixed covariance quantities used by the likelihood.
+        Precompute fixed covariance quantities for the likelihood.
         """
         sigma_sq = torch.as_tensor(
             sigma_sq,
@@ -425,8 +654,13 @@ class PriorCorrection:
 
         sigma_sq = sigma_sq.reshape(())
 
+        if not torch.isfinite(sigma_sq):
+            raise ValueError("sigma_sq must be finite.")
+
         if sigma_sq.item() <= 0.0:
-            raise ValueError("sigma_sq must be strictly positive.")
+            raise ValueError(
+                "sigma_sq must be strictly positive."
+            )
 
         self._covariance_matrix(
             alpha_ref=alpha_ref,
@@ -437,9 +671,6 @@ class PriorCorrection:
 
         s_sq = self.cov_singular_values.square()
 
-        # Diagonal weights in the Woodbury correction:
-        #
-        # s_i^2 / [sigma^2 (sigma^2 + s_i^2)]
         self.woodbury_weights = (
             s_sq
             / (
@@ -448,18 +679,36 @@ class PriorCorrection:
             )
         ).detach()
 
-        # log |S| = d log(sigma^2)
-        #           + sum_i log(1 + s_i^2 / sigma^2)
         self.logdet_S = (
             self.n_evidence * torch.log(self.sigma_sq)
-            + torch.log1p(s_sq / self.sigma_sq).sum()
+            + torch.log1p(
+                s_sq / self.sigma_sq
+            ).sum()
         ).detach()
+
+    def _apply_precision(self, vector):
+        """
+        Compute S^{-1} vector using the fixed SVD representation.
+        """
+        precision_vector = vector / self.sigma_sq
+
+        if self.cov_rank > 0:
+            projected = self.cov_Vh @ vector
+
+            precision_vector = (
+                precision_vector
+                - self.cov_Vh.T
+                @ (
+                    self.woodbury_weights
+                    * projected
+                )
+            )
+
+        return precision_vector
 
     def mahalanobis(self, alpha):
         """
-        Evaluate P(alpha).T @ S^{-1} @ P(alpha) using the fixed SVD.
-
-        The covariance matrix and its inverse are never formed explicitly.
+        Compute the fixed-covariance Mahalanobis distance.
         """
         if self.sigma_sq is None:
             raise RuntimeError(
@@ -468,41 +717,36 @@ class PriorCorrection:
 
         Omega = self._observed_simulated_evidence(alpha)
 
-        # Ensemble-mean simulated evidence, shape (d,).
         simulated_mean = Omega.mean(dim=0)
+        residual = self.base_observed - simulated_mean
 
-        observed = self.base_observed
-        residual = observed - simulated_mean
+        precision_residual = self._apply_precision(
+            residual
+        )
 
-        # First Woodbury term:
-        # ||P||^2 / sigma^2
-        quadratic = residual.square().sum() / self.sigma_sq
+        quadratic = torch.dot(
+            residual,
+            precision_residual,
+        )
 
-        # Second Woodbury term:
-        # P.T V diag(w_i) V.T P
-        if self.cov_rank > 0:
-            projected_residual = self.cov_Vh @ residual
-            correction = (
-                self.woodbury_weights
-                * projected_residual.square()
-            ).sum()
-
-            quadratic = quadratic - correction
+        # Tiny negative values can occur through floating-point
+        # cancellation in the Woodbury expression.
+        if (
+            not quadratic.requires_grad
+            and quadratic.item() < 0.0
+            and quadratic.item() > -1.0e-10
+        ):
+            quadratic = quadratic.clamp_min(0.0)
 
         return quadratic
 
-    def log_likelihood(self, alpha, include_constants=True):
+    def log_likelihood(
+        self,
+        alpha,
+        include_constants=True,
+    ):
         """
         Compute the fixed-covariance Gaussian working log-likelihood.
-
-        Parameters
-        ----------
-        alpha : torch.Tensor
-            Current mode-dependent log-scale corrections.
-        include_constants : bool, optional
-            Include the normalizing constant and fixed log determinant.
-            These terms can be omitted during optimization because they
-            do not depend on alpha.
         """
         quadratic = self.mahalanobis(alpha)
 
@@ -519,40 +763,10 @@ class PriorCorrection:
             + self.logdet_S
             + quadratic
         )
-    def water_fraction_penalty(
-            self,
-            alpha,
-            regularization_strength
-    ):
-        """
-        Compute the log likelihood /fidelity penalty for the water fraction.
 
-        Parameters
-        ----------
-        alpha : torch.Tensor
-            Current mode-dependent log-scale corrections.
-        regularization_strength : float
-            Weight of the penalty term.
-        gamma : float, optional
-            Softness parameter for the binary water fraction operator.
-        wf_threshold : float, optional
-            Threshold for the water fraction.
-
-        Returns
-        -------
-        torch.Tensor
-            The computed water fraction penalty.
-        """
-        wf_binary = self._simulated_waterfraction(
-            alpha
-        )
-
-        # take log and sum all of them divided by number of elements across simulations
-        penalty = -torch.log(wf_binary + 1e-12).mean()
-
-        return regularization_strength * penalty
-
-
+    # ------------------------------------------------------------------
+    # Regularization
+    # ------------------------------------------------------------------
 
     @staticmethod
     def smooth_elastic_net(
@@ -562,31 +776,15 @@ class PriorCorrection:
         smoothing_epsilon=1.0e-6,
     ):
         """
-        Differentiable approximation to the elastic-net penalty.
+        Elastic-net penalty on standardized additive corrections.
 
-        The penalty is
-
-            gamma * [
-                eta * sum(sqrt(alpha_i^2 + eps^2) - eps)
-                + (1 - eta) / 2 * ||alpha||_2^2
-            ],
-
-        where gamma is regularization_strength and eta is l1_ratio.
-
-        Parameters
-        ----------
-        alpha : torch.Tensor
-            Correction parameters.
-        regularization_strength : float or torch.Tensor
-            Overall penalty weight, gamma.
-        l1_ratio : float, optional
-            Relative weight eta assigned to the smoothed L1 component.
-            Must lie in [0, 1].
-        smoothing_epsilon : float, optional
-            Positive smoothing parameter for the L1 approximation.
+        Because alpha is expressed in PCA standard deviations, the same
+        regularization weight has a comparable interpretation across modes.
         """
         if not 0.0 <= l1_ratio <= 1.0:
-            raise ValueError("l1_ratio must lie between 0 and 1.")
+            raise ValueError(
+                "l1_ratio must lie between 0 and 1."
+            )
 
         if smoothing_epsilon <= 0.0:
             raise ValueError(
@@ -598,11 +796,25 @@ class PriorCorrection:
             dtype=alpha.dtype,
             device=alpha.device,
         )
+
+        if gamma.numel() != 1:
+            raise ValueError(
+                "regularization_strength must be scalar."
+            )
+
+        if gamma.item() < 0.0:
+            raise ValueError(
+                "regularization_strength cannot be negative."
+            )
+
         eta = alpha.new_tensor(l1_ratio)
         eps = alpha.new_tensor(smoothing_epsilon)
 
         smooth_l1 = (
-            torch.sqrt(alpha.square() + eps.square()) - eps
+            torch.sqrt(
+                alpha.square() + eps.square()
+            )
+            - eps
         ).sum()
 
         l2 = 0.5 * alpha.square().sum()
@@ -611,6 +823,89 @@ class PriorCorrection:
             eta * smooth_l1
             + (1.0 - eta) * l2
         )
+
+    def water_fraction_penalty(
+        self,
+        alpha,
+        regularization_strength,
+    ):
+        """
+        Compute a stable, averaged water-fraction barrier.
+
+        The pointwise penalty is
+
+            softplus((phi - phi_max) / gamma_wf).
+
+        It is small below the water-fraction threshold and grows
+        approximately linearly above the threshold.
+
+        The penalty is averaged rather than summed so that its magnitude
+        is less sensitive to ensemble size and grid resolution.
+        """
+        rho_w = torch.as_tensor(
+            regularization_strength,
+            dtype=alpha.dtype,
+            device=alpha.device,
+        )
+
+        if rho_w.numel() != 1:
+            raise ValueError(
+                "Water-fraction regularization strength must be scalar."
+            )
+
+        if rho_w.item() < 0.0:
+            raise ValueError(
+                "Water-fraction regularization strength cannot be negative."
+            )
+
+        water_fraction = self._simulated_waterfraction(
+            alpha
+        )
+
+        normalized_exceedance = (
+            water_fraction - self.wf_threshold
+        ) / self.gamma_wf
+
+        pointwise_penalty = F.softplus(
+            normalized_exceedance
+        )
+
+        return rho_w * pointwise_penalty.mean()
+
+    # ------------------------------------------------------------------
+    # Objective
+    # ------------------------------------------------------------------
+
+    def objective_components(
+        self,
+        alpha,
+        rho_e,
+        rho_w,
+        l1_ratio,
+        smoothing_epsilon,
+    ):
+        """
+        Return each component of the reduced MAP objective.
+        """
+        data_misfit = 0.5 * self.mahalanobis(alpha)
+
+        elastic_penalty = self.smooth_elastic_net(
+            alpha=alpha,
+            regularization_strength=rho_e,
+            l1_ratio=l1_ratio,
+            smoothing_epsilon=smoothing_epsilon,
+        )
+
+        water_penalty = self.water_fraction_penalty(
+            alpha=alpha,
+            regularization_strength=rho_w,
+        )
+
+        return {
+            "data_misfit": data_misfit,
+            "elastic_penalty": elastic_penalty,
+            "water_penalty": water_penalty,
+        }
 
     def objective(
         self,
@@ -622,25 +917,24 @@ class PriorCorrection:
     ):
         """
         Reduced MAP objective.
-
-        Terms in the Gaussian likelihood that are constant with respect
-        to alpha are omitted.
         """
-        data_misfit = 0.5 * self.mahalanobis(alpha)
-
-        penalty_e = self.smooth_elastic_net(
+        components = self.objective_components(
             alpha=alpha,
-            regularization_strength=rho_e,
+            rho_e=rho_e,
+            rho_w=rho_w,
             l1_ratio=l1_ratio,
             smoothing_epsilon=smoothing_epsilon,
         )
 
-        penalty_wf = self.water_fraction_penalty(
-            alpha=alpha,
-            regularization_strength=rho_w
+        return (
+            components["data_misfit"]
+            + components["elastic_penalty"]
+            + components["water_penalty"]
         )
 
-        return data_misfit + penalty_e + penalty_wf
+    # ------------------------------------------------------------------
+    # Optimization
+    # ------------------------------------------------------------------
 
     def solve_MAP(
         self,
@@ -651,79 +945,129 @@ class PriorCorrection:
         smoothing_epsilon=1.0e-6,
         alpha_ref=None,
         rank_tolerance=None,
-        lr=0.5,
+        lr=0.1,
         max_iter=100,
-        max_eval_per_iter=10,
+        max_eval_per_iter=20,
         tolerance_grad=1.0e-7,
         tolerance_change=1.0e-9,
         show_progress=True,
         active_modes=None,
+        use_line_search=True,
     ):
         """
-        Solve the smooth elastic-net MAP problem using L-BFGS.
+        Solve for additive standardized PCA corrections using L-BFGS.
 
         Parameters
         ----------
         rho_e : float
             Elastic-net regularization strength.
+
         rho_w : float
             Water-fraction regularization strength.
+
         sigma_sq : float or torch.Tensor
-            Isotropic residual variance.
+            Isotropic residual variance in the fixed covariance model.
+
         l1_ratio : float, optional
             Elastic-net mixing parameter.
+
         smoothing_epsilon : float, optional
-            Smoothing parameter for the approximate L1 penalty.
+            Smoothing scale for the approximate L1 term.
+
         alpha_ref : torch.Tensor, optional
-            Reference correction used to construct the fixed covariance.
+            Reference standardized additive correction used to construct
+            the fixed evidence covariance. The default is zero.
+
         rank_tolerance : float, optional
-            Numerical rank tolerance for the covariance SVD.
+            Numerical rank tolerance for the evidence SVD.
+
         lr : float, optional
-            L-BFGS learning-rate parameter.
+            Initial L-BFGS step size.
+
         max_iter : int, optional
             Maximum number of accepted outer L-BFGS iterations.
+
         max_eval_per_iter : int, optional
-            Approximate maximum number of closure evaluations per outer
+            Maximum number of closure evaluations allowed for each outer
             L-BFGS iteration.
+
         tolerance_grad : float, optional
-            Gradient convergence tolerance.
+            Maximum-gradient convergence tolerance.
+
         tolerance_change : float, optional
             Objective-change convergence tolerance.
+
         show_progress : bool, optional
             Display progress bars.
+
+        active_modes : sequence of int, optional
+            Modes allowed to change. If omitted, all retained PCA modes
+            are optimized.
+
         use_line_search : bool, optional
-            Use strong-Wolfe line search. Disabling it greatly reduces
-            closure evaluations but can make optimization less robust.
+            Use strong-Wolfe line search.
         """
-        self._initialize_alpha(active_modes=active_modes)
-        self._prepare_observed_domain()
+        if self.Eb_star is None:
+            raise RuntimeError(
+                "Call load_simulation_var before solve_MAP."
+            )
+
+        if not hasattr(self, "base"):
+            raise RuntimeError(
+                "Call load_observation before solve_MAP."
+            )
 
         if max_iter < 1:
-            raise ValueError("max_iter must be at least 1.")
+            raise ValueError(
+                "max_iter must be at least 1."
+            )
 
         if max_eval_per_iter < 1:
-            raise ValueError("max_eval_per_iter must be at least 1.")
+            raise ValueError(
+                "max_eval_per_iter must be at least 1."
+            )
 
-        # Compute the fixed covariance representation.
+        if lr <= 0.0:
+            raise ValueError(
+                "lr must be strictly positive."
+            )
+
+        self._initialize_alpha(
+            active_modes=active_modes
+        )
+
+        self._prepare_observed_domain()
+
         self._prepare_fixed_metric(
             sigma_sq=sigma_sq,
             alpha_ref=alpha_ref,
             rank_tolerance=rank_tolerance,
         )
 
+        line_search_fn = (
+            "strong_wolfe"
+            if use_line_search
+            else None
+        )
+
         optimizer = optim.LBFGS(
             [self.alpha_free],
             lr=lr,
             max_iter=1,
-            max_eval=1,
+            max_eval=max_eval_per_iter,
             tolerance_grad=tolerance_grad,
             tolerance_change=tolerance_change,
-            line_search_fn="strong_wolfe",
+            line_search_fn=line_search_fn,
         )
 
         closure_evaluations = 0
         loss_history = []
+        data_misfit_history = []
+        elastic_penalty_history = []
+        water_penalty_history = []
         gradient_history = []
+        alpha_norm_history = []
+
         previous_loss = None
         convergence_reason = "maximum iterations reached"
 
@@ -748,6 +1092,7 @@ class PriorCorrection:
             nonlocal closure_evaluations
 
             optimizer.zero_grad(set_to_none=True)
+
             alpha_full = self._full_alpha()
 
             loss = self.objective(
@@ -760,14 +1105,27 @@ class PriorCorrection:
 
             if not torch.isfinite(loss):
                 raise RuntimeError(
-                    "The optimization objective became non-finite. "
-                    "Check sigma_sq, beta, alpha, and the outputs of the "
-                    "observation operator."
+                    "The objective became non-finite. Check the "
+                    "observation operators, sigma_sq, beta, gamma_wf, "
+                    "and PCA inputs."
                 )
 
             loss.backward()
 
+            if self.alpha_free.grad is None:
+                raise RuntimeError(
+                    "No gradient was produced for alpha_free."
+                )
+
+            if not torch.isfinite(
+                self.alpha_free.grad
+            ).all():
+                raise RuntimeError(
+                    "The alpha gradient became non-finite."
+                )
+
             closure_evaluations += 1
+
             evaluation_bar.update(1)
             evaluation_bar.set_postfix(
                 loss=f"{loss.detach().item():.6e}",
@@ -777,16 +1135,14 @@ class PriorCorrection:
             return loss
 
         try:
-            for iteration in range(max_iter):
+            for _ in range(max_iter):
                 optimizer.step(closure)
 
-                # Evaluate diagnostics at the accepted parameter value.
-                # This forward evaluation is not counted as a line-search
-                # closure evaluation.
+                # Evaluate all components at the accepted point.
                 with torch.no_grad():
                     alpha_full = self._full_alpha()
 
-                    current_loss = self.objective(
+                    components = self.objective_components(
                         alpha=alpha_full,
                         rho_e=rho_e,
                         rho_w=rho_w,
@@ -794,11 +1150,22 @@ class PriorCorrection:
                         smoothing_epsilon=smoothing_epsilon,
                     )
 
-                current_loss_value = current_loss.item()
+                    current_loss = (
+                        components["data_misfit"]
+                        + components["elastic_penalty"]
+                        + components["water_penalty"]
+                    )
 
-                # Recompute the gradient at the accepted parameter value.
-                # The last line-search closure is not guaranteed to have been
-                # evaluated exactly at the final accepted alpha.
+                current_loss_value = current_loss.item()
+                data_value = components["data_misfit"].item()
+                elastic_value = components[
+                    "elastic_penalty"
+                ].item()
+                water_value = components[
+                    "water_penalty"
+                ].item()
+
+                # Recompute the gradient at the accepted point.
                 optimizer.zero_grad(set_to_none=True)
 
                 alpha_full = self._full_alpha()
@@ -810,34 +1177,53 @@ class PriorCorrection:
                     l1_ratio=l1_ratio,
                     smoothing_epsilon=smoothing_epsilon,
                 )
+
                 diagnostic_loss.backward()
 
+                if self.alpha_free.grad is None:
+                    raise RuntimeError(
+                        "No diagnostic gradient was produced."
+                    )
+
                 gradient_norm = (
-                    self.alpha_free.grad.detach()
+                    self.alpha_free.grad
+                    .detach()
                     .abs()
                     .max()
                     .item()
                 )
 
-                alpha_norm = alpha_full.detach().norm().item()
+                alpha_norm = (
+                    alpha_full.detach().norm().item()
+                )
 
                 if previous_loss is None:
                     loss_change = float("inf")
                 else:
                     loss_change = abs(
-                        previous_loss - current_loss_value
+                        previous_loss
+                        - current_loss_value
                     )
 
                 loss_history.append(current_loss_value)
+                data_misfit_history.append(data_value)
+                elastic_penalty_history.append(
+                    elastic_value
+                )
+                water_penalty_history.append(
+                    water_value
+                )
                 gradient_history.append(gradient_norm)
+                alpha_norm_history.append(alpha_norm)
 
                 iteration_bar.update(1)
                 iteration_bar.set_postfix(
                     loss=f"{current_loss_value:.6e}",
+                    data=f"{data_value:.3e}",
+                    water=f"{water_value:.3e}",
+                    elastic=f"{elastic_value:.3e}",
                     grad=f"{gradient_norm:.3e}",
-                    dloss=f"{loss_change:.3e}",
                     alpha=f"{alpha_norm:.3e}",
-                    evals=closure_evaluations,
                     refresh=True,
                 )
 
@@ -845,7 +1231,9 @@ class PriorCorrection:
                     math.isfinite(gradient_norm)
                     and gradient_norm <= tolerance_grad
                 ):
-                    convergence_reason = "gradient tolerance reached"
+                    convergence_reason = (
+                        "gradient tolerance reached"
+                    )
                     break
 
                 if (
@@ -865,11 +1253,15 @@ class PriorCorrection:
 
         optimizer.zero_grad(set_to_none=True)
 
+        # --------------------------------------------------------------
+        # Final results and physical diagnostics
+        # --------------------------------------------------------------
+
         with torch.no_grad():
             final_alpha = self._full_alpha()
             self.alpha = final_alpha.detach().clone()
 
-            final_loss = self.objective(
+            final_components = self.objective_components(
                 alpha=final_alpha,
                 rho_e=rho_e,
                 rho_w=rho_w,
@@ -877,37 +1269,140 @@ class PriorCorrection:
                 smoothing_epsilon=smoothing_epsilon,
             )
 
-            final_mahalanobis = self.mahalanobis(final_alpha)
-
-            final_penalty_e = self.smooth_elastic_net(
-                alpha=final_alpha,
-                regularization_strength=rho_e,
-                l1_ratio=l1_ratio,
-                smoothing_epsilon=smoothing_epsilon,
-            )
-            final_penalty_w = self.water_fraction_penalty(
-                alpha=final_alpha,
-                regularization_strength=rho_w
+            final_loss = (
+                final_components["data_misfit"]
+                + final_components["elastic_penalty"]
+                + final_components["water_penalty"]
             )
 
+            final_mahalanobis = self.mahalanobis(
+                final_alpha
+            )
 
+            final_corrected_coefficients = (
+                self._corrected_coefficients(
+                    final_alpha
+                )
+            )
+
+            raw_coefficient_shift = (
+                self.score_std * final_alpha
+            )
+
+            final_water_fraction = (
+                self._simulated_waterfraction(
+                    final_alpha
+                )
+            )
+
+            exceedance = torch.relu(
+                final_water_fraction
+                - self.wf_threshold
+            )
+
+            fraction_above_threshold = (
+                final_water_fraction
+                > self.wf_threshold
+            ).to(
+                dtype=self.Eb_star.dtype
+            ).mean()
 
             result = {
+                # Standardized additive correction.
                 "alpha": self.alpha.clone(),
-                "alpha_free": self.alpha_free.detach().clone(),
-                "active_modes": self.active_modes.detach().clone(),
-                "scale": torch.exp(self.alpha).clone(),
+                "alpha_free": (
+                    self.alpha_free.detach().clone()
+                ),
+                "active_modes": (
+                    self.active_modes.detach().clone()
+                ),
+
+                # Equivalent raw PCA coefficient shift.
+                "raw_coefficient_shift": (
+                    raw_coefficient_shift.clone()
+                ),
+                "corrected_coefficients": (
+                    final_corrected_coefficients.clone()
+                ),
+
+                # PCA scaling information.
+                "explained_variance": (
+                    self.explained_variance.clone()
+                ),
+                "score_std": self.score_std.clone(),
+
+                # Final objective values.
                 "loss": final_loss.detach().clone(),
-                "mahalanobis": final_mahalanobis.detach().clone(),
-                "regularization_penalty_e": final_penalty_e.detach().clone(),
-                "regularization_penalty_w": final_penalty_w.detach().clone(),
+                "data_misfit": (
+                    final_components[
+                        "data_misfit"
+                    ].detach().clone()
+                ),
+                "mahalanobis": (
+                    final_mahalanobis.detach().clone()
+                ),
+                "regularization_penalty_e": (
+                    final_components[
+                        "elastic_penalty"
+                    ].detach().clone()
+                ),
+                "regularization_penalty_w": (
+                    final_components[
+                        "water_penalty"
+                    ].detach().clone()
+                ),
+
+                # Water-fraction diagnostics.
+                "water_fraction_max": (
+                    final_water_fraction.max()
+                    .detach()
+                    .clone()
+                ),
+                "water_fraction_mean": (
+                    final_water_fraction.mean()
+                    .detach()
+                    .clone()
+                ),
+                "fraction_above_wf_threshold": (
+                    fraction_above_threshold
+                    .detach()
+                    .clone()
+                ),
+                "mean_wf_exceedance": (
+                    exceedance.mean()
+                    .detach()
+                    .clone()
+                ),
+                "max_wf_exceedance": (
+                    exceedance.max()
+                    .detach()
+                    .clone()
+                ),
+
+                # Covariance information.
                 "covariance_rank": self.cov_rank,
-                "singular_values": self.cov_singular_values.clone(),
+                "singular_values": (
+                    self.cov_singular_values.clone()
+                ),
                 "logdet_S": self.logdet_S.clone(),
+
+                # Optimization diagnostics.
                 "iterations": len(loss_history),
-                "closure_evaluations": closure_evaluations,
+                "closure_evaluations": (
+                    closure_evaluations
+                ),
                 "loss_history": loss_history,
+                "data_misfit_history": (
+                    data_misfit_history
+                ),
+                "elastic_penalty_history": (
+                    elastic_penalty_history
+                ),
+                "water_penalty_history": (
+                    water_penalty_history
+                ),
                 "gradient_history": gradient_history,
+                "alpha_norm_history": alpha_norm_history,
                 "convergence_reason": convergence_reason,
             }
 
