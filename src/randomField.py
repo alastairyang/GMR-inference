@@ -108,6 +108,8 @@ def sample_graph_matern(
         Variance assigned to each retained Laplacian mode.
     retained : (k,) boolean ndarray
         Indicator for retained modes.
+    raw_variance : (k_used,) ndarray
+        Unnormalized Matern spectral variances for each retained mode.
     """
     eigenvalues = np.asarray(eigenvalues, dtype=float)
     eigenvectors = np.asarray(eigenvectors, dtype=float)
@@ -157,4 +159,4 @@ def sample_graph_matern(
         np.sqrt(spectral_variance)[:, None] * z
     )
 
-    return samples, spectral_variance, retained
+    return samples, spectral_variance, retained, raw_variance
