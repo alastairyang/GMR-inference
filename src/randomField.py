@@ -1,6 +1,7 @@
 import numpy as np
 import scipy.sparse as sparse
 import scipy.sparse.linalg as spla
+import torch
 
 def grid_laplacian(mask, hx=1.0, hy=1.0):
     mask = np.asarray(mask, dtype=bool)
@@ -160,3 +161,133 @@ def sample_graph_matern(
     )
 
     return samples, spectral_variance, retained, raw_variance
+
+def _project_away(F, V):
+    """
+    project F away from the subspace spanned by the columns of V.
+
+    Parameters
+    ----------
+    F : (n, m) ndarray
+        Matrix whose columns are to be projected.
+    V : (n, k) ndarray
+        Matrix whose columns span the subspace to project away from.
+
+    Returns
+    -------
+    F_projected : (n, m) ndarray
+        The columns of F after projection.
+    """
+    return F - V @ (V.T @ F)
+
+def discrepancy_basis(mask, hx, hy, n_mode, V, plotting=False):
+    """
+    Create basis function built on Matern kernel Gaussian Process and
+    the basis are orthogonal to the columns of V (i.e. PCA basis from simulation)
+
+    Parameters
+    ----------
+    mask : (n,) boolean ndarray
+        Boolean array indicating active nodes.
+    hx : float
+        Grid spacing in the x direction.
+    hy : float
+        Grid spacing in the y direction.
+    n_mode : int
+        Number of discrepancy basis functions to generate.
+    V : (n, k) ndarray
+        Matrix whose columns span the subspace to project away from.
+
+    Returns
+    -------
+    U_F : (n, n_mode) ndarray
+        Orthonormal basis for the discrepancy subspace.
+    S_F : (n_mode,) ndarray
+        Singular values corresponding to the basis vectors.
+    VT_F : (n_mode, m) ndarray
+        Right singular vectors of the projected basis.
+
+    """
+    print("Step 1: Eigen-decomposition on graph Laplacian...")
+    eigenval, eigenvec, active_ids, full_ids = eigen_laplacian(
+        mask=mask, 
+        k = n_mode,
+        hx = hx, 
+        hy = hy
+    )
+    print("...Done.")
+
+    nx = mask.shape[0]
+    ny = mask.shape[1]
+
+    print("Step 2: Get mode covariance under Matern kernel...")
+    samples_active, mode_variance, retained, raw_variance = sample_graph_matern(
+        eigenvalues=eigenval,
+        eigenvectors=eigenvec,
+        sigma=1.0,
+        nu=0.1,
+        rho=1.0,          # approximately 10 cells with your current L
+        n_samples=5,
+        remove_constant=False,
+        rng=np.random.default_rng(42),
+    )
+    print("...Done.")
+
+    print("Step 3: Projecting away and performing SVD...")
+    # construct the covariance-scaled graph basis
+    eigenvec_full = np.zeros((nx * ny, eigenvec.shape[1]))
+    eigenvec_full[active_ids, :] = eigenvec
+    eigenvec_full = eigenvec_full.reshape(ny, nx, eigenvec.shape[1])
+    eigenvec_flat = eigenvec_full.reshape(ny * nx, eigenvec_full.shape[2])
+    F = eigenvec_flat @ np.diag(np.sqrt(mode_variance))
+
+    # project F away from the PCA subspace spanned by V
+    F_normal = F - V @ (V.T @ F)
+
+    # do SVD on F_normal: coordinate transformation
+    U_F, S_F, VT_F = np.linalg.svd(F_normal, full_matrices=False)
+    print("...Done.")
+
+    if plotting:
+        import matplotlib.pyplot as plt
+
+        # plot every 10 eigenvectors
+        plt.figure(figsize=(25, 3))
+        for i in range(0, U_F.shape[1], 10):
+            plt.subplot(1, U_F.shape[1] // 10, i // 10 + 1)
+            plt.imshow(U_F[:, i].reshape(ny, nx), 
+                       cmap='RdBu_r',
+                       vmin=-0.03, vmax=0.03)
+            plt.title(f"Mode {i}")
+            plt.gca().invert_yaxis()
+        plt.show()
+
+    return U_F, S_F, VT_F
+
+def generate_random_field(sigma, U, S, n):
+    """
+    Generate random fields from eigenvectors and singular values
+
+    Parameters
+    ----------
+    sigma : float
+        Amplitude pre-factor.
+    U : (n, n_mode) ndarray
+        Orthonormal basis for the discrepancy subspace.
+    S : (n_mode,) ndarray
+        Singular values corresponding to the basis vectors.
+    n : int
+        Number of random fields to generate.
+
+    Returns
+    -------
+    fields : (n, n_mode) ndarray
+        Generated random fields.
+
+    """
+    # make input torch tensor, if not already
+    if not torch.is_tensor(U):
+        U = torch.tensor(U, dtype=torch.float32)
+    if not torch.is_tensor(S):
+        S = torch.tensor(S, dtype=torch.float32)
+    return sigma * (U @ (torch.diag(S) @ torch.randn(S.shape[0], n)))

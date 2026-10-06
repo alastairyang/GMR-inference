@@ -36,6 +36,10 @@ class model:
         self.extent = extent
         self.coord = coord
         self.X_grid, self.Y_grid = np.meshgrid(coord[0], coord[1])
+        xx = coord[0].ravel()
+        yy = coord[1].ravel()   
+        self.delta_x = xx[1] - xx[0]
+        self.delta_y = yy[1] - yy[0]
 
         # in our naming convention, '_ori' means standardized but not reduced (original dimension)
         # 'reduced' means the dimension has been reduced by PCA.
@@ -121,6 +125,9 @@ class model:
             Whether to show the plot of the data.
         """
         self.nx, self.ny = X.shape[0], X.shape[1]
+
+
+        
         self.ndim_ori = self.nx * self.ny * self.n_channel
         self.n_channel = X.shape[2]
         self.n_samples_total = X.shape[3]
@@ -829,17 +836,31 @@ class model:
 
             plt.show()
         return z_optimal, residual_latent, residual_recon, residual
+
+    def _initialize_discrepancy_basis(self, n_mode, plotting=False):
+        from src.randomField import discrepancy_basis
+
+        U_F, S_F, _ = discrepancy_basis(
+            self.domain_mask,
+            self.delta_x,
+            self.delta_y,
+            n_mode,
+            self.pca_x.components_.T,
+            plotting=plotting
+        )
+        self.U_F = U_F
+        self.S_F = S_F
+        return
+        
     
-    def compute_MAP(self, beta=1, beta_w=0.001, n_iter=20, lr=0.5, show_plot=True, show_trajectory=False):
+    def compute_MAP(self, n_discrepancy_mode = 100, beta=1, beta_w=0.001, n_iter=20, lr=0.5, show_plot=True, show_trajectory=False):
         """ 
         Compute the Maximum A Posteriori
         """
 
-        # n_samples = 300
-        # X_samples = self.gmm_prop.sample(n_samples)
-        # X_samples_mean = np.mean(X_samples, axis=0)
-        # init_Eb_ori = X_samples_mean.flatten()
-        # print("size of init_Eb_ori:", init_Eb_ori.shape)
+        from src.randomField import generate_random_field
+
+        self._initialize_discrepancy_basis(n_discrepancy_mode, plotting=False)
         
         # just init with random number between -1 and 1
         init_Eb_ori = np.random.uniform(-1, 1, size=(self.ndim_reduced_x,))
