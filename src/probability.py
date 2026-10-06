@@ -3,6 +3,8 @@ import numpy as np
 from gmr import MVN
 from src.ice import enthalpy_to_temperature, enthalpy_to_water_fraction
 from src.utilities import reverse_standardize, shape_check
+from src.observationOperator import latent_waterfraction_operator_enthalpy
+from src.observationOperator import latent_temperature_operator_enthalpy
 # from src.observationOperator import latent_operator_enthalpy 
 # import pytorch for AD
 import torch
@@ -131,7 +133,24 @@ def loglikelihood_wf(beta_w, Eb, Tpmp, eps = 0.01, wf_threshold=0.02):
     wf = enthalpy_to_water_fraction(Eb, Tpmp)
     return torch.sum(torch.log(1 / (1 + torch.exp((1/beta_w) * (wf - wf_threshold))) + eps))
 
-def log_prior(Eb, gmm):
+def log_prior_gp(xi):
+    """
+    Compute the log prior probability of the basal enthalpy field under the GP model.
+    The prior is a multivariate standard normal distribution, \mathcal{N} \sim \mathcal{N}(0, I)
+
+    Parameters:
+    -------
+    xi: array
+        latent variable vector (n_features,)
+
+    Returns:
+    -------
+    L_gp: scalar
+        log prior probability under the GP model
+    """
+    return -0.5 * torch.sum(xi**2)
+
+def log_prior_gmm(Eb, gmm):
     """   
     Compute the log prior probability of the basal enthalpy field under the GMM model.
 
@@ -210,7 +229,7 @@ def loglikelihoods_sum(beta, beta_w, Tb, Eb, Tpmp, dw, df, eps=0.01):
     L3 = loglikelihood_wf(beta_w, Eb, Tpmp, eps)
     return L1 + L2 + L3
 
-def log_posterior(Eb_star, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon, verbose = False):
+def log_posterior(Eb_star_gp, Eb_star_gmm, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon, verbose = False):
     """   
     Compute the log posterior probability 
     
@@ -222,8 +241,10 @@ def log_posterior(Eb_star, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, 
 
     Parameters:
     -------
-    Eb_star: array
-        latent enthalpy at base in the reduced space (n_feature_latent,)
+    Eb_star_gp: array
+        latent enthalpy at base in the reduced space for the GP prior (n_feature_latent,)
+    Eb_star_gmm: array
+        latent enthalpy at base in the reduced space for the GMM prior (n_feature_discrepancy,)
     V: array
         right singular vectors from PCA (n_features, n_feature_latent)
     gmm: GaussianMixture
@@ -247,8 +268,10 @@ def log_posterior(Eb_star, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, 
           to avoid numerical issues (only to be consistent with pre-processing)
 
     """
-    if isinstance(Eb_star, np.ndarray):
-        Eb_star = torch.from_numpy(Eb_star)
+    if isinstance(Eb_star_gp, np.ndarray):
+        Eb_star_gp = torch.from_numpy(Eb_star_gp)
+    if isinstance(Eb_star_gmm, np.ndarray):
+        Eb_star_gmm = torch.from_numpy(Eb_star_gmm)
     if isinstance(V, np.ndarray):
         V = torch.from_numpy(V)
     if isinstance(Tpmp, np.ndarray):
@@ -262,7 +285,7 @@ def log_posterior(Eb_star, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, 
     if isinstance(df, np.ndarray):
         df = torch.from_numpy(df)
 
-    Eb = V.T @ Eb_star # map from latent space to original space
+    Eb = V.T @ Eb_star_gmm # map from latent space to original space
     Eb_ori = reverse_standardize(Eb, Eb_mean, Eb_std, method='relaxation', epsilon=Eb_epsilon) # reverse standardization
     Tb = enthalpy_to_temperature(Eb_ori, Tpmp)
     # check that no Tb is above Tpmp 
@@ -274,16 +297,19 @@ def log_posterior(Eb_star, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, 
     L3 = loglikelihood_wf(beta_w, Eb_ori, Tpmp)
 
     # Eb_star back to numpy for log_prior computation
-    Eb_star_np = Eb_star.detach().numpy()
-    log_prior_val = log_prior(Eb_star_np, gmm)
+    Eb_star_gp_np  = Eb_star_gp.detach().numpy()
+    Eb_star_gmm_np = Eb_star_gmm.detach().numpy()
+    log_prior_gmm_val = log_prior_gmm(Eb_star_gmm_np, gmm)
+    log_prior_gp_val  = log_prior_gp(Eb_star_gp_np)
     
     if verbose:
         print(f"Log Likelihood Thawed: {L1.item():.3f}")
         print(f"Log Likelihood Frozen: {L2.item():.3f}")
         print(f"Log Likelihood Water Fraction: {L3.item():.3f}")
-        print(f"Log Prior: {log_prior_val.item():.3f}")
+        print(f"Log Prior (GMM): {log_prior_gmm_val.item():.3f}")
+        print(f"Log Prior (GP): {log_prior_gp_val.item():.3f}")
 
-    return L1 + L2 + L3 + log_prior_val
+    return L1 + L2 + L3 + log_prior_gmm_val + log_prior_gp_val
 
 def log_posterior_gradient(Eb_star, V, gmm, beta, beta_w, Tpmp, Eb_mean, Eb_std, dw, df, Eb_epsilon):
     """   

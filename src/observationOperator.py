@@ -104,8 +104,76 @@ def latent_waterfraction_operator_enthalpy(
     
     return wf
 
+def gp_latent_enthalpy_operator(
+    V,
+    xi_val,
+    Eb_mean,
+    Eb_std,
+    method,
+    epsilon=None,
+):
+    """
+    Transforming latent Gaussian Process variable to physical enthalpy.
+    """
+    latent_input_check(V, xi_val, method=method, epsilon=epsilon)
 
-def latent_temperature_operator_enthalpy(
+    Eb = V.T @ xi_val
+
+    Eb_mean_column = Eb_mean.reshape(-1, 1)
+    Eb_std_column = Eb_std.reshape(-1, 1)
+
+    Eb_physical = reverse_standardize(
+        Eb,
+        Eb_mean_column,
+        Eb_std_column,
+        method=method,
+        epsilon=epsilon,
+    )
+
+    return Eb_physical
+
+def pca_latent_enthalpy_operator(
+    V,
+    Eb_star,
+    Eb_mean,
+    Eb_std,
+    method,
+    epsilon=None,
+):
+    """
+    Transforming latent PCA coefficients to physical enthalpy.
+    """
+    latent_input_check(V, Eb_star, method=method, epsilon=epsilon)
+
+    Eb = V.T @ Eb_star
+
+    Eb_mean_column = Eb_mean.reshape(-1, 1)
+    Eb_std_column = Eb_std.reshape(-1, 1)
+
+    Eb_physical = reverse_standardize(
+        Eb,
+        Eb_mean_column,
+        Eb_std_column,
+        method=method,
+        epsilon=epsilon,
+    )
+
+    return Eb_physical
+
+def enthalpy_to_delta_temperature_operator(
+        Eb,
+        Tpmp
+):
+    """
+    Operator converting basal enthalpy to temperature to pressure melting [0,infinity) .
+
+    """
+    Tb = enthalpy_to_temperature(Eb, Tpmp)
+    delta_Tb = Tpmp - Tb
+    return delta_Tb
+
+
+def pca_latent_temperature_operator(
     V,
     Eb_star,
     Eb_mean,
@@ -116,6 +184,7 @@ def latent_temperature_operator_enthalpy(
 ):
     """
     Vectorized observation operator acting on latent PCA coefficients.
+    The operator returns the degree to pressure melting point
 
     Parameters
     ----------
@@ -152,46 +221,24 @@ def latent_temperature_operator_enthalpy(
     """
     latent_input_check(V, Eb_star, method=method, epsilon=epsilon)
 
-    # Reconstruct every simulation simultaneously.
-    #
-    # V.T:     (n_physical_features, n_latent_features)
-    # Eb_star: (n_latent_features, n_samples)
-    # Eb:      (n_physical_features, n_samples)
-    Eb = V.T @ Eb_star
-
-    # Add a singleton sample dimension so the physical-location
-    # quantities broadcast across all ensemble members.
-    Eb_mean_column = Eb_mean.reshape(-1, 1)
-    Eb_std_column = Eb_std.reshape(-1, 1)
-    Tpmp_column = Tpmp.reshape(-1, 1)
-
-    # Expected result:
-    #     Eb_original.shape == (n_physical_features, n_samples)
-    Eb_original = reverse_standardize(
-        Eb,
-        Eb_mean_column,
-        Eb_std_column,
+    Eb_physical = pca_latent_enthalpy_operator(
+        V,
+        Eb_star,
+        Eb_mean,
+        Eb_std,
         method=method,
         epsilon=epsilon,
     )
 
-    # This function should use only elementwise tensor operations so that
-    # Tpmp_column broadcasts over all simulations.
-    Tb_original = enthalpy_to_temperature(
-        Eb_original,
-        Tpmp_column,
+    Eb_original = Eb_physical
+    Tpmp_column = Tpmp.reshape(-1, 1)
+
+    delta_T = enthalpy_to_delta_temperature_operator(
+        Eb_original, 
+        Tpmp_column
     )
 
-    # Broadcasting avoids constructing Tpmp with .repeat().
-    delta_T = Tpmp_column - Tb_original
-
     return delta_T
-
-def operator_temperature(Tb, Tpmp):
-    """
-    Observation operator directly on temperature in its physical unit and domain
-    """
-    return Tpmp - Tb
 
 def temperature_binary_hard_operator(delta_T, dT_cutoff, mask=None):
     """

@@ -838,6 +838,9 @@ class model:
         return z_optimal, residual_latent, residual_recon, residual
 
     def _initialize_discrepancy_basis(self, n_mode, plotting=False):
+        """
+        Initialize the discrepancy basis for the random field.
+        """
         from src.randomField import discrepancy_basis
 
         U_F, S_F, _ = discrepancy_basis(
@@ -859,22 +862,27 @@ class model:
         """
 
         from src.randomField import generate_random_field
-
+        self.n_discrepancy_mode = n_discrepancy_mode
         self._initialize_discrepancy_basis(n_discrepancy_mode, plotting=False)
-        
-        # just init with random number between -1 and 1
-        init_Eb_ori = np.random.uniform(-1, 1, size=(self.ndim_reduced_x,))
 
-        init_Eb_reduced = torch.from_numpy(init_Eb_ori)
+        # initialize GMM and GP prior 
+        init_X_gmm = np.random.uniform(-1, 1, size=(self.ndim_reduced_x,))
+        init_X_gp  = np.random.uniform(-1, 1, size=(self.n_discrepancy_mode,))
+
+        init_X_gp  = torch.from_numpy(init_X_gp)
+        init_X_gmm = torch.from_numpy(init_X_gmm)
         Tpmp = torch.from_numpy(self.pmp).flatten()
         dw = torch.from_numpy(self.thawed_fractional_area)
         df = torch.from_numpy(self.frozen_fractional_area)
-
         Eb_mean_data = torch.from_numpy(self.X_mean)
-        Eb_std_data = torch.from_numpy(self.X_std)
+        Eb_std_data  = torch.from_numpy(self.X_std)
 
         # start the optimization using L-BFGS in PyTorch
-        X = init_Eb_reduced.clone().requires_grad_(True)
+        X = torch.concat([init_X_gp, init_X_gmm])
+        gp_idx  = torch.arange(self.n_discrepancy_mode)
+        gmm_idx = torch.arange(self.n_discrepancy_mode, X.shape[0])
+        X = X.clone().requires_grad_(True)
+        print(f"Total dimension of the optimization problem: {X.shape[0]}")
         optimizer = optim.LBFGS([X], lr=lr, max_iter=n_iter)
 
         saved_snapshots = []
@@ -884,31 +892,38 @@ class model:
             optimizer.zero_grad()
             X_detached = X.detach()
 
+            X_gp  = X_detached[gp_idx]
+            X_gmm = X_detached[gmm_idx] 
+
             # function value: negative log posterior
-            value = -log_posterior(X_detached, 
-                                   self.pca_x.components_, 
-                                   self.gmm_prop,
-                                   beta,
-                                   beta_w,
-                                   Tpmp, 
-                                   Eb_mean_data, 
-                                   Eb_std_data,
-                                   dw, 
-                                   df,
-                                   verbose=False, 
-                                   Eb_epsilon=self.X_epsilon)
+            value = -log_posterior(
+                X_gp, X_gmm, 
+                self.pca_x.components_, 
+                self.gmm_prop,
+                beta,
+                beta_w,
+                Tpmp, 
+                Eb_mean_data, 
+                Eb_std_data,
+                dw, 
+                df,
+                verbose=False, 
+                Eb_epsilon=self.X_epsilon
+            )
             # gradient
-            grad = -log_posterior_gradient(X_detached, 
-                                           self.pca_x.components_, 
-                                           self.gmm_prop, 
-                                           beta, 
-                                           beta_w,
-                                           Tpmp, 
-                                           Eb_mean_data, 
-                                           Eb_std_data, 
-                                           dw, 
-                                           df, 
-                                           Eb_epsilon=self.X_epsilon)
+            grad = -log_posterior_gradient(
+                X_gp, X_gmm, 
+                self.pca_x.components_, 
+                self.gmm_prop, 
+                beta, 
+                beta_w,
+                Tpmp, 
+                Eb_mean_data, 
+                Eb_std_data, 
+                dw, 
+                df, 
+                Eb_epsilon=self.X_epsilon
+            )
             # Convert gradient to torch tensor if needed
             if not isinstance(grad, torch.Tensor):
                 grad = torch.tensor(grad, dtype=X.dtype, device=X.device)
@@ -921,18 +936,20 @@ class model:
             optimizer.step(closure)
             # monitor the loss (or the neg log posterior)
             with torch.no_grad():
-                current_loss = -log_posterior(X, 
-                                              self.pca_x.components_, 
-                                              self.gmm_prop,
-                                              beta, 
-                                              beta_w,
-                                              Tpmp, 
-                                              Eb_mean_data, 
-                                              Eb_std_data,
-                                              dw, 
-                                              df,
-                                              verbose=False, 
-                                              Eb_epsilon=self.X_epsilon)
+                current_loss = -log_posterior(
+                    X_gp, X_gmm,
+                    self.pca_x.components_, 
+                    self.gmm_prop,
+                    beta, 
+                    beta_w,
+                    Tpmp, 
+                    Eb_mean_data, 
+                    Eb_std_data,
+                    dw, 
+                    df,
+                    verbose=False, 
+                    Eb_epsilon=self.X_epsilon
+                )
                 print(f"Iteration {i+1}/{n_iter}, Negative Log Posterior: {current_loss.item():.4f}")
             # save the first n iterations and the last iteration
             if i < 9 or i == n_iter - 1:
@@ -953,12 +970,13 @@ class model:
         Eb_std_data  = Eb_std_data.numpy()
         Eb_mean_data = Eb_mean_data.numpy()
         Eb_MAP = self.pca_x.inverse_transform(X_optimized.reshape(1, -1)) #.reshape(self.nx, self.ny)
-        Eb_MAP_ori = torch.from_numpy(reverse_standardize(Eb_MAP, 
-                                                          Eb_mean_data, 
-                                                          Eb_std_data, 
-                                                          method='relaxation', 
-                                                          epsilon=self.X_epsilon)
-                                                          ).reshape(self.nx, self.ny)
+        Eb_MAP_ori = torch.from_numpy(reverse_standardize(
+            Eb_MAP, 
+            Eb_mean_data, 
+            Eb_std_data, 
+            method='relaxation', 
+            epsilon=self.X_epsilon)
+        ).reshape(self.nx, self.ny)
         Tb_MAP = enthalpy_to_temperature(Eb_MAP_ori.flatten(), Tpmp.flatten()).reshape(self.nx, self.ny).numpy()
         Tb_MAP[self.domain_mask == False] = np.nan
 
