@@ -101,3 +101,32 @@ class latentEnthalpyModel:
             "delta_T": delta_T,
             "water_fraction": water_fraction,
         }
+
+    @dataclass
+    class basalEvidence:
+        Tpmp: torch.Tensor
+        thawed_fraction: torch.Tensor
+        frozen_fraction: torch.Tensor
+
+        @classmethod
+        def from_arrays(
+            cls,
+            Tpmp,
+            dw,
+            df,
+            *,
+            dtype=torch.float64,
+            device=None,
+        ):
+            return cls(
+                Tpmp=as_torch(Tpmp, dtype=dtype, device=device),
+                thawed_fraction=as_torch(dw, dtype=dtype, device=device),
+                frozen_fraction=as_torch(df, dtype=dtype, device=device),
+            )
+
+    @dataclass(frozen=True)
+    class PosteriorConfig:
+        beta: float
+        beta_w: float
+        eps: float = 0.01
+        water_fraction_threshold: float = 0.02
