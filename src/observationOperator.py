@@ -165,12 +165,12 @@ def enthalpy_to_delta_temperature_operator(
         Tpmp
 ):
     """
-    Operator converting basal enthalpy to temperature to pressure melting [0,infinity) .
+    Operator converting basal enthalpy to temperature to pressure melting [0,Tpmp) .
 
     """
-    Tb = enthalpy_to_temperature(Eb, Tpmp)
-    delta_Tb = Tpmp - Tb
-    return delta_Tb
+    T = enthalpy_to_temperature(Eb, Tpmp)
+    delta_T = Tpmp - T
+    return delta_T
 
 
 def pca_latent_temperature_operator(
