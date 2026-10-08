@@ -32,19 +32,41 @@ class enthalpyPosterior:
 
     def thawed_log_likelihood(self, delta_T):
         beta = self.config.beta
-        dw   = self.evidence.thawed_fraction
+        dw = self.evidence.thawed_fraction
 
-        shape_check(delta_T, dw)
+        delta_T = delta_T.squeeze(-1)
+        dw = dw.squeeze(-1)
+
+        if delta_T.shape != dw.shape:
+            raise ValueError(
+                f"delta_T and thawed_fraction must have identical shapes; "
+                f"got {tuple(delta_T.shape)} and {tuple(dw.shape)}."
+            )
+
         return -(1.0 / beta) * torch.sum(delta_T * dw)
+
+
 
     def frozen_log_likelihood(self, delta_T):
         beta = self.config.beta
-        eps  = self.config.eps
-        df   = self.evidence.frozen_fraction
-        shape_check(delta_T, df)
-        value = 1.0 + (eps - 1.0) * torch.exp(
-            -(1.0 / beta) * delta_T
+        eps = self.config.eps
+        df = self.evidence.frozen_fraction
+
+        delta_T = delta_T.squeeze(-1)
+        df = df.squeeze(-1)
+
+        if delta_T.shape != df.shape:
+            raise ValueError(
+                f"delta_T and frozen_fraction must have identical shapes; "
+                f"got {tuple(delta_T.shape)} and {tuple(df.shape)}."
+            )
+
+        value = (
+            1.0
+            + (eps - 1.0)
+            * torch.exp(-delta_T / beta)
         )
+
         return torch.sum(torch.log(value) * df)
 
     def water_fraction_log_likelihood(self, water_fraction):
@@ -80,7 +102,7 @@ class enthalpyPosterior:
 
     def gmm_log_prior_numpy(self, z_gmm):
         z_gmm_np = (
-            z_gmm.detach().cpu().numpy()
+            z_gmm.detach().cpu().numpy().reshape(1, -1)
         )
 
         value = self.gmm.to_log_probability_density(
@@ -106,18 +128,15 @@ class enthalpyPosterior:
 
     # ---------------- GRADIENT ----------------
     def gradient(self, z_gp, z_gmm):
-        """
-        Compute the gradient of the log probability with respect to z_gp and z_gmm.
-
-        """
         z_gp_tensor = self.forward_model.to_tensor(
             z_gp,
             requires_grad=True,
-        )
+        ).reshape(-1, 1)
+
         z_gmm_tensor = self.forward_model.to_tensor(
             z_gmm,
             requires_grad=True,
-        )
+        ).reshape(-1, 1)
 
         likelihood = self.log_likelihood(
             z_gp_tensor,
@@ -132,27 +151,45 @@ class enthalpyPosterior:
         )
 
         likelihood_grad_gp = (
-            likelihood_grad_gp.detach().cpu().numpy()
+            likelihood_grad_gp.detach()
+            .cpu()
+            .numpy()
+            .reshape(-1)
         )
+
         likelihood_grad_gmm = (
-            likelihood_grad_gmm.detach().cpu().numpy()
+            likelihood_grad_gmm.detach()
+            .cpu()
+            .numpy()
+            .reshape(-1)
         )
 
-        gp_prior_grad = self.log_prior_gp_gradient(
-            z_gp_tensor
+        gp_prior_grad = -(
+            z_gp_tensor.detach()
+            .cpu()
+            .numpy()
+            .reshape(-1)
         )
+
         gmm_prior_grad = self.gmm.log_prior_gmm_gradient(
-            z_gmm_tensor.detach().cpu().numpy(), 
+            z_gmm_tensor.detach()
+            .cpu()
+            .numpy()
+            .reshape(-1)
         )
 
-        grad_gp  = likelihood_grad_gp  + gp_prior_grad
+        grad_gp = likelihood_grad_gp + gp_prior_grad
         grad_gmm = likelihood_grad_gmm + gmm_prior_grad
 
         return grad_gp, grad_gmm
 
     def packed_gradient(self, z_gp, z_gmm):
         grad_gp, grad_gmm = self.gradient(z_gp, z_gmm)
-        return np.concatenate([grad_gp, grad_gmm])
+
+        return np.concatenate([
+            np.asarray(grad_gp).reshape(-1),
+            np.asarray(grad_gmm).reshape(-1),
+        ])
 
     @staticmethod
     def log_prior_gp_gradient(z_gp):

@@ -4,6 +4,7 @@ import torch
 from src.observationOperator import enthalpy_to_delta_temperature_operator
 from src.observationOperator import gp_latent_enthalpy_operator, pca_latent_enthalpy_operator
 from src.ice import enthalpy_to_water_fraction 
+from src.utilities import reverse_standardize
 
 def as_torch(x, *, dtype=torch.float64, device=None):
     """
@@ -35,11 +36,15 @@ class latentEnthalpyModel:
         self.Eb_mean    = as_torch(Eb_mean, dtype=self.dtype, device=self.device)
         self.Eb_std     = as_torch(Eb_std, dtype=self.dtype, device=self.device)
         self.Eb_epsilon = as_torch(Eb_epsilon, dtype=self.dtype, device=self.device)
-        self.Tpmp       = as_torch(Tpmp, dtype=self.dtype, device=self.device)  
+        self.Tpmp       = as_torch(Tpmp, dtype=self.dtype, device=self.device).reshape(-1, 1)
         if method not in ["relaxation", "standard"]:
             raise ValueError(f"Unsupported method: {method}")
         else:
             self.method     = method
+
+        self.pca_eigenvec        = as_torch(self.pca.components_.T, dtype=self.dtype, device=self.device)
+        self.gp_eigenvec         = as_torch(self.gp.eigenvec, dtype=self.dtype, device=self.device)
+        self.gp_singular_val_mtx = as_torch(self.gp.singular_val_mtx, dtype=self.dtype, device=self.device)
 
     def to_tensor(self, x, *, requires_grad=False):
         x = as_torch(x, dtype=self.dtype, device=self.device)
@@ -51,13 +56,9 @@ class latentEnthalpyModel:
         the physical basal enthalpy field.
         """
         return gp_latent_enthalpy_operator(
-            self.gp.eigenvec.T,
-            self.gp.singular_val_mtx,
+            self.gp_eigenvec.T,
+            self.gp_singular_val_mtx,
             z_gp,
-            self.Eb_mean,
-            self.Eb_std,
-            method=self.method,
-            epsilon=self.Eb_epsilon,
         )
 
     def decode_gmm(self, z_gmm):
@@ -65,32 +66,51 @@ class latentEnthalpyModel:
         Decode the latent Gaussian mixture model + PCA latent
         representation into the physical basal enthalpy field.
         """
+    
         return pca_latent_enthalpy_operator(
-            self.pca.components_.T,
+            self.pca_eigenvec.T,
             z_gmm,
-            self.Eb_mean,
-            self.Eb_std,
-            method=self.method,
-            epsilon=self.Eb_epsilon,
         )
 
     def enthalpy(self, z_gp, z_gmm):
         """
         Construct the total physical basal enthalpy field
+        Decode standardized enthalpy from latent representation,
+        then reverse-standardize back to the physical enthalpy field.
         """
-        return self.decode_gp(z_gp) + self.decode_gmm(z_gmm)
+        # make z_gp and z_gmm two dimensional
+        z_gp  = z_gp.reshape(z_gp.shape[0], -1)
+        z_gmm = z_gmm.reshape(z_gmm.shape[0], -1)
+
+        enthalpy_gp  = self.decode_gp(z_gp)
+        enthalpy_gmm = self.decode_gmm(z_gmm)
+
+        enthalpy_total = enthalpy_gp + enthalpy_gmm
+
+        # reverse standardize
+        Eb_mean_column = self.Eb_mean.reshape(-1, 1)
+        Eb_std_column  = self.Eb_std.reshape(-1, 1)
+
+        enthalpy_total_physical = reverse_standardize(
+            enthalpy_total,
+            Eb_mean_column,
+            Eb_std_column,
+            method=self.method,
+            epsilon=self.Eb_epsilon,
+        )
+
+        return enthalpy_total_physical
 
     def physical_state(self, z_gp, z_gmm):
         """
-        Construct the physical basal thermal state, including delta temperature (w.r.t. Tpmp),
-        enthalpy, and water fraction.
-        
+        Construct physical basal thermal state.
         """
         Eb = self.enthalpy(z_gp, z_gmm)
 
         delta_T = enthalpy_to_delta_temperature_operator(
             Eb,
             self.Tpmp,
+            istorch=True
         )
 
         water_fraction = enthalpy_to_water_fraction(
@@ -104,8 +124,9 @@ class latentEnthalpyModel:
             "water_fraction": water_fraction,
         }
 
+
 @dataclass
-class basalEvidence:
+class BasalEvidence:
     Tpmp: torch.Tensor
     thawed_mask: torch.Tensor
     frozen_mask: torch.Tensor
@@ -125,11 +146,35 @@ class basalEvidence:
         device=None,
     ):
         return cls(
-            Tpmp=as_torch(Tpmp, dtype=dtype, device=device),
-            thawed_mask=as_torch(thawed_mask, dtype=dtype, device=device),
-            frozen_mask=as_torch(frozen_mask, dtype=dtype, device=device),
-            thawed_fraction=as_torch(dw, dtype=dtype, device=device),
-            frozen_fraction=as_torch(df, dtype=dtype, device=device),
+            Tpmp=as_torch(
+                Tpmp,
+                dtype=dtype,
+                device=device,
+            ).reshape(-1, 1),
+
+            thawed_mask=as_torch(
+                thawed_mask,
+                dtype=torch.bool,
+                device=device,
+            ).reshape(-1, 1),
+
+            frozen_mask=as_torch(
+                frozen_mask,
+                dtype=torch.bool,
+                device=device,
+            ).reshape(-1, 1),
+
+            thawed_fraction=as_torch(
+                dw,
+                dtype=dtype,
+                device=device,
+            ).reshape(-1, 1),
+
+            frozen_fraction=as_torch(
+                df,
+                dtype=dtype,
+                device=device,
+            ).reshape(-1, 1),
         )
 
 @dataclass(frozen=True)

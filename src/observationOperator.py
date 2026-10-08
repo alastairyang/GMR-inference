@@ -1,4 +1,3 @@
-from numpy.random import beta
 import torch
 import numpy as np
 import torch.nn.functional as F
@@ -30,7 +29,7 @@ def latent_input_check(V, Eb_star, method=None, epsilon=None):
 
     if V.shape[0] != Eb_star.shape[0]:
         raise ValueError(
-            "The latent dimension of V must match the first "
+            "The latent (1st) dimension of V must match the first "
             "dimension of Eb_star."
         )
     return True
@@ -108,68 +107,39 @@ def gp_latent_enthalpy_operator(
     V,
     singular_val_mtx,
     xi_val,
-    Eb_mean,
-    Eb_std,
-    method,
-    epsilon=None,
 ):
     """
     Transforming latent Gaussian Process variable to physical enthalpy.
     """
-    latent_input_check(V, xi_val, method=method, epsilon=epsilon)
+    latent_input_check(V, xi_val)
 
     Eb = V.T @ (singular_val_mtx @ xi_val)
 
-    Eb_mean_column = Eb_mean.reshape(-1, 1)
-    Eb_std_column = Eb_std.reshape(-1, 1)
-
-    Eb_physical = reverse_standardize(
-        Eb,
-        Eb_mean_column,
-        Eb_std_column,
-        method=method,
-        epsilon=epsilon,
-    )
-
-    return Eb_physical
+    return Eb
 
 def pca_latent_enthalpy_operator(
     V,
     Eb_star,
-    Eb_mean,
-    Eb_std,
-    method,
-    epsilon=None,
 ):
     """
     Transforming latent PCA coefficients to physical enthalpy.
     """
-    latent_input_check(V, Eb_star, method=method, epsilon=epsilon)
+    latent_input_check(V, Eb_star)
 
     Eb = V.T @ Eb_star
 
-    Eb_mean_column = Eb_mean.reshape(-1, 1)
-    Eb_std_column = Eb_std.reshape(-1, 1)
-
-    Eb_physical = reverse_standardize(
-        Eb,
-        Eb_mean_column,
-        Eb_std_column,
-        method=method,
-        epsilon=epsilon,
-    )
-
-    return Eb_physical
+    return Eb
 
 def enthalpy_to_delta_temperature_operator(
         Eb,
-        Tpmp
+        Tpmp,
+        istorch=True
 ):
     """
     Operator converting basal enthalpy to temperature to pressure melting [0,Tpmp) .
 
     """
-    T = enthalpy_to_temperature(Eb, Tpmp)
+    T = enthalpy_to_temperature(Eb, Tpmp, istorch=istorch)
     delta_T = Tpmp - T
     return delta_T
 

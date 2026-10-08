@@ -32,6 +32,14 @@ class gmmAugmented:
             Gradient of log p(Eb) with respect to Eb
         """
 
+        expected_features = self.gmm.means.shape[1]
+
+        if Eb.size != expected_features:
+            raise ValueError(
+                f"GMM expects {expected_features} latent features, "
+                f"but received {Eb.size}."
+            )
+
         n_features = Eb.shape[0]
         n_components = self.gmm.n_components
         
