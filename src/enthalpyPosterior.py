@@ -3,7 +3,6 @@ import numpy as np
 from src.utilities import shape_check
 import scipy as sp
 from gmr import MVN
-# from src.probability import to_log_probability_density
 
 class enthalpyPosterior:
 
@@ -65,7 +64,6 @@ class enthalpyPosterior:
         state = self.forward_model.physical_state(
             z_gp,
             z_gmm,
-            self.evidence.Tpmp,
         )
 
         return (

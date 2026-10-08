@@ -10,6 +10,16 @@ class posteriorObjective:
         self.gmm_dimension = gmm_dimension
 
     def unpack(self, theta):
+        """
+        Unpack the concatenated parameter vector into GP and GMM components.
+
+        Convention is that the first `gp_dimension` elements correspond to the GP component,
+        and the remaining elements in theta correspond to the GMM component.
+
+        Returns:
+            z_gp: Parameters corresponding to the GP component.
+            z_gmm: Parameters corresponding to the GMM component.
+        """
         expected = self.gp_dimension + self.gmm_dimension
 
         if theta.size != expected:
@@ -36,7 +46,7 @@ class posteriorObjective:
     @staticmethod
     def finite_difference_gradient(objective, theta, epsilon=1e-6):
         import numpy as np
-        
+
         theta = np.asarray(theta, dtype=float)
         gradient = np.zeros_like(theta)
 

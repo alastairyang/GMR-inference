@@ -17,7 +17,8 @@ class latentEnthalpyModel:
 
     def __init__(
         self,
-        V,
+        pca,
+        gp,
         Eb_mean,
         Eb_std,
         Eb_epsilon,
@@ -29,8 +30,8 @@ class latentEnthalpyModel:
     ):
         self.dtype  = dtype
         self.device = device
-        
-        self.V          = as_torch(V, dtype=self.dtype, device=self.device)
+        self.gp  = gp  # lowRankGP class
+        self.pca = pca # sklearn PCA model
         self.Eb_mean    = as_torch(Eb_mean, dtype=self.dtype, device=self.device)
         self.Eb_std     = as_torch(Eb_std, dtype=self.dtype, device=self.device)
         self.Eb_epsilon = as_torch(Eb_epsilon, dtype=self.dtype, device=self.device)
@@ -50,7 +51,8 @@ class latentEnthalpyModel:
         the physical basal enthalpy field.
         """
         return gp_latent_enthalpy_operator(
-            self.V.T,
+            self.gp.eigenvec.T,
+            self.gp.singular_val_mtx,
             z_gp,
             self.Eb_mean,
             self.Eb_std,
@@ -64,7 +66,7 @@ class latentEnthalpyModel:
         representation into the physical basal enthalpy field.
         """
         return pca_latent_enthalpy_operator(
-            self.V.T,
+            self.pca.components_.T,
             z_gmm,
             self.Eb_mean,
             self.Eb_std,
@@ -102,31 +104,37 @@ class latentEnthalpyModel:
             "water_fraction": water_fraction,
         }
 
-    @dataclass
-    class basalEvidence:
-        Tpmp: torch.Tensor
-        thawed_fraction: torch.Tensor
-        frozen_fraction: torch.Tensor
+@dataclass
+class basalEvidence:
+    Tpmp: torch.Tensor
+    thawed_mask: torch.Tensor
+    frozen_mask: torch.Tensor
+    thawed_fraction: torch.Tensor
+    frozen_fraction: torch.Tensor
 
-        @classmethod
-        def from_arrays(
-            cls,
-            Tpmp,
-            dw,
-            df,
-            *,
-            dtype=torch.float64,
-            device=None,
-        ):
-            return cls(
-                Tpmp=as_torch(Tpmp, dtype=dtype, device=device),
-                thawed_fraction=as_torch(dw, dtype=dtype, device=device),
-                frozen_fraction=as_torch(df, dtype=dtype, device=device),
-            )
+    @classmethod
+    def from_arrays(
+        cls,
+        Tpmp,
+        thawed_mask,
+        frozen_mask,
+        dw,
+        df,
+        *,
+        dtype=torch.float64,
+        device=None,
+    ):
+        return cls(
+            Tpmp=as_torch(Tpmp, dtype=dtype, device=device),
+            thawed_mask=as_torch(thawed_mask, dtype=dtype, device=device),
+            frozen_mask=as_torch(frozen_mask, dtype=dtype, device=device),
+            thawed_fraction=as_torch(dw, dtype=dtype, device=device),
+            frozen_fraction=as_torch(df, dtype=dtype, device=device),
+        )
 
-    @dataclass(frozen=True)
-    class PosteriorConfig:
-        beta: float
-        beta_w: float
-        eps: float = 0.01
-        water_fraction_threshold: float = 0.02
+@dataclass(frozen=True)
+class PosteriorConfig:
+    beta: float
+    beta_w: float
+    eps: float = 0.01
+    water_fraction_threshold: float = 0.02

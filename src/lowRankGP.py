@@ -17,12 +17,20 @@ class lowRankGP:
         hy,
         n_mode,
         pca_basis, 
+        sigma_amp,
+        nu,
+        rho,
     ):
         self.domain_mask = domain_mask
         self.hx = hx
         self.hy = hy
         self.n_mode = n_mode
         self.pca_basis = pca_basis 
+        self.sigma_amp = sigma_amp # constant, discrepancy amplitude (in normalized space)
+        self.nu = nu # Matern smoothness
+        self.rho = rho # Approximate practical range (in grid cells)
+
+        self.eigenvec = None    
 
         # initialize (saving the eigenpairs)
         self.discrepancy_basis(
@@ -89,7 +97,7 @@ class lowRankGP:
         L, active_ids, full_ids = self.grid_laplacian(hx=hx, hy=hy)
 
         # Smallest eigenvalues/eigenvectors of a symmetric Laplacian
-        eigenvalues, eigenvectors = spla.eigsh(
+        gl_eigenvalues, gl_eigenvectors = spla.eigsh(
             L,
             k=k,
             which="SM",
@@ -97,13 +105,12 @@ class lowRankGP:
             maxiter=10000
         )
 
-        return eigenvalues, eigenvectors, active_ids, full_ids
+        return gl_eigenvalues, gl_eigenvectors, active_ids, full_ids
 
     def sample_graph_matern(
         self,
-        sigma=1.0,
-        nu=1.0,
-        rho=10.0,
+        gl_eigenvalues,
+        gl_eigenvectors,
         dimension=2,
         n_samples=1,
         remove_constant=False,
@@ -145,8 +152,8 @@ class lowRankGP:
         raw_variance : (k_used,) ndarray
             Unnormalized Matern spectral variances for each retained mode.
         """
-        eigenvalues = np.asarray(self.eigenvalues, dtype=float)
-        eigenvectors = np.asarray(self.eigenvectors, dtype=float)
+        eigenvalues = np.asarray(gl_eigenvalues, dtype=float)
+        eigenvectors = np.asarray(gl_eigenvectors, dtype=float)
 
         # eigsh does not always return eigenpairs in sorted order
         order = np.argsort(eigenvalues)
@@ -168,8 +175,8 @@ class lowRankGP:
         if lam.size == 0:
             raise ValueError("No Laplacian modes remain after filtering.")
 
-        alpha = nu + dimension / 2.0
-        kappa = np.sqrt(8.0 * nu) / rho
+        alpha = self.nu + dimension / 2.0
+        kappa = np.sqrt(8.0 * self.nu) / self.rho
 
         # Unnormalized Matern spectral variances
         raw_variance = (kappa**2 + lam) ** (-alpha)
@@ -181,7 +188,7 @@ class lowRankGP:
         normalization = n_active / raw_variance.sum()
 
         spectral_variance = (
-            sigma**2 * normalization * raw_variance
+            self.sigma_amp**2 * normalization * raw_variance
         )
 
         if rng is None:
@@ -241,7 +248,7 @@ class lowRankGP:
 
         """
         print("Step 1: Eigen-decomposition on graph Laplacian...")
-        eigenval, eigenvec, active_ids, full_ids = self.eigen_laplacian(
+        gl_eigenval, gl_eigenvec, active_ids, full_ids = self.eigen_laplacian(
             k = n_mode,
             hx = hx, 
             hy = hy
@@ -253,11 +260,8 @@ class lowRankGP:
 
         print("Step 2: Get mode covariance under Matern kernel...")
         samples_active, mode_variance, retained, raw_variance = self.sample_graph_matern(
-            eigenvalues=eigenval,
-            eigenvectors=eigenvec,
-            sigma=1.0,
-            nu=0.1,
-            rho=1.0,          # approximately 10 cells with your current L
+            gl_eigenvalues  = gl_eigenval,
+            gl_eigenvectors = gl_eigenvec,
             n_samples=5,
             remove_constant=False,
             rng=np.random.default_rng(42),
@@ -266,23 +270,27 @@ class lowRankGP:
 
         print("Step 3: Projecting away and performing SVD...")
         # construct the covariance-scaled graph basis
-        eigenvec_full = np.zeros((nx * ny, eigenvec.shape[1]))
-        eigenvec_full[active_ids, :] = eigenvec
-        eigenvec_full = eigenvec_full.reshape(ny, nx, eigenvec.shape[1])
+        eigenvec_full = np.zeros((nx * ny, gl_eigenvec.shape[1]))
+        eigenvec_full[active_ids, :] = gl_eigenvec
+        eigenvec_full = eigenvec_full.reshape(ny, nx, gl_eigenvec.shape[1])
         eigenvec_flat = eigenvec_full.reshape(ny * nx, eigenvec_full.shape[2])
         F = eigenvec_flat @ np.diag(np.sqrt(mode_variance))
 
         # project F away from the PCA subspace spanned by V
-        F_normal = F - V @ (V.T @ F)
+        F_normal = self._project_away(F, V)
 
         # do SVD on F_normal: coordinate transformation
         U_F, S_F, VT_F = np.linalg.svd(F_normal, full_matrices=False)
         print("...Done.")
 
         self.left_singular_vectors  = U_F
-        self.singular_values        = S_F
         self.right_singular_vectors = VT_F
+        self.singular_values        = S_F
 
+        # this is used in the latentEnthalpyModel for decoding the GP latent representation
+        self.eigenvec = self.left_singular_vectors
+        self.singular_val_mtx       = np.diag(S_F)
+        
         return U_F, S_F, VT_F
 
     def plot_discrepancy_modes(self):

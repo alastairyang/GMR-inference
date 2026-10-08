@@ -106,6 +106,7 @@ def latent_waterfraction_operator_enthalpy(
 
 def gp_latent_enthalpy_operator(
     V,
+    singular_val_mtx,
     xi_val,
     Eb_mean,
     Eb_std,
@@ -117,7 +118,7 @@ def gp_latent_enthalpy_operator(
     """
     latent_input_check(V, xi_val, method=method, epsilon=epsilon)
 
-    Eb = V.T @ xi_val
+    Eb = V.T @ (singular_val_mtx @ xi_val)
 
     Eb_mean_column = Eb_mean.reshape(-1, 1)
     Eb_std_column = Eb_std.reshape(-1, 1)
