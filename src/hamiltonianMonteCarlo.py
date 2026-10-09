@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 class HMCenergy(torch.autograd.Function):
     """

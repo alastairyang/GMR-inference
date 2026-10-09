@@ -177,7 +177,7 @@ class BasalEvidence:
             ).reshape(-1, 1),
         )
 
-@dataclass(frozen=True)
+@dataclass
 class PosteriorConfig:
     beta: float
     beta_w: float
