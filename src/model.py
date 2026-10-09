@@ -4,7 +4,7 @@ from src.amortization import propagate_uncertainty
 from src.utilities import standardize, reverse_standardize
 from src.probability import log_posterior_gradient, log_posterior, log_posterior_hessian
 from src.ice import enthalpy_to_temperature
-from src.hamiltonianMC import regular_potential
+from OLDhamiltonianMC import regular_potential
 
 from gmr.utils import check_random_state
 from gmr import GMM
