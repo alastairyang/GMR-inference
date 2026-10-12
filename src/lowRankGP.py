@@ -275,6 +275,7 @@ class lowRankGP:
         eigenvec_full = eigenvec_full.reshape(ny, nx, gl_eigenvec.shape[1])
         eigenvec_flat = eigenvec_full.reshape(ny * nx, eigenvec_full.shape[2])
         F = eigenvec_flat @ np.diag(np.sqrt(mode_variance))
+        # print("shape of F:", F.shape)
 
         # project F away from the PCA subspace spanned by V
         F_normal = self._project_away(F, V)
