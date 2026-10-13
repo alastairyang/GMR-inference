@@ -4,7 +4,6 @@ from src.amortization import propagate_uncertainty
 from src.utilities import standardize, reverse_standardize
 from src.probability import log_posterior_gradient, log_posterior, log_posterior_hessian
 from src.ice import enthalpy_to_temperature
-from OLDhamiltonianMC import regular_potential
 
 from gmr.utils import check_random_state
 from gmr import GMM
@@ -265,6 +264,9 @@ class model:
         return
     
     def load_split_data_pls(self, X_train, Y_train, X_val, Y_val, X_test, Y_test):
+        """
+        
+        """
         def flatten(A):
             return A.reshape((self.nx * self.ny * self.n_channel, -1)).T
         # (n_samples, 65536)
@@ -1717,7 +1719,12 @@ class model:
         return thawed_consistent_frac, frozen_consistent_frac, bestsample_consistency, worstsample_consistency
         
 
-    def plot_gmm_samples_pca(self, n_samples=3):
+    def plot_gmm_samples_pca(
+            self, 
+            n_samples=3,
+            x_name='X',
+            y_name='Y',
+        ):
         """   
         Visualize GMM predictions from random test samples. Default to 3 samples. 
         
@@ -1762,8 +1769,8 @@ class model:
             obs_Y = obs_Y.reshape(self.nx, self.ny)
             # Plotting: five columns: observed Y, True X, predicted X, error (RMSE), uncertainty (stddev)
             plt.subplot(n_test_samples_plot, 5, count * 5 + 1)
-            plt.imshow(obs_Y, cmap='RdBu', vmin=-3, vmax=3)
-            plt.title(rf'Observed $N_a$ (Test Sample {i+1})', fontsize=title_fontsize)
+            plt.imshow(obs_Y, cmap='RdBu', vmin=-2, vmax=2)
+            plt.title(rf'Observed (Test Sample {i+1})', fontsize=title_fontsize)
             plt.colorbar()
             # invert y axis
             plt.gca().invert_yaxis()
@@ -1771,14 +1778,14 @@ class model:
             # add a title for the subplot
 
             plt.subplot(n_test_samples_plot, 5, count * 5 + 2)
-            plt.imshow(x_test_img, cmap='RdBu', vmin=-3, vmax=3)
-            plt.title(rf'True $E_b$ (Test Sample {i+1})', fontsize=title_fontsize)
+            plt.imshow(x_test_img, cmap='RdBu', vmin=-2, vmax=2)
+            plt.title(rf'True (Test Sample {i+1})', fontsize=title_fontsize)
             plt.colorbar()
             plt.gca().invert_yaxis()
 
             plt.subplot(n_test_samples_plot, 5, count * 5 + 3)
-            plt.imshow(x_pred_img, cmap='RdBu', vmin=-3, vmax=3)
-            plt.title(rf'Predicted $E_b$ (Test Sample {i+1})', fontsize=title_fontsize)
+            plt.imshow(x_pred_img, cmap='RdBu', vmin=-2, vmax=2)
+            plt.title(rf'Predicted (Test Sample {i+1})', fontsize=title_fontsize)
             plt.colorbar()
             plt.gca().invert_yaxis()
             
