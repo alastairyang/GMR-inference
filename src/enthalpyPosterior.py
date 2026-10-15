@@ -29,6 +29,12 @@ class enthalpyPosterior:
         self.gp  = gp  # gaussian process class, "lowRankGP"
         self.config = config
 
+        self.gmm_dim = self.gmm.gmm.means.shape[1]
+        self.gp_dim  = self.gp.n_mode
+        self.total_dim = self.gp_dim + self.gmm_dim
+        # absolute index to avoid confusion when slicing
+        self.gp_dim_index  = slice(0, self.gp_dim)
+        self.gmm_dim_index = slice(self.gp_dim, self.total_dim)
 
     def thawed_log_likelihood(self, delta_T):
         beta = self.config.beta
@@ -178,6 +184,8 @@ class enthalpyPosterior:
             .reshape(-1)
         )
 
+        
+
         grad_gp = likelihood_grad_gp + gp_prior_grad
         grad_gmm = likelihood_grad_gmm + gmm_prior_grad
 
@@ -190,6 +198,57 @@ class enthalpyPosterior:
             np.asarray(grad_gp).reshape(-1),
             np.asarray(grad_gmm).reshape(-1),
         ])
+
+    def hessian(self, z_gp, z_gmm):
+        """
+        Compute the Hessian of the log posterior with respect to z_gp and z_gmm.
+
+
+        """
+        z_gp_tensor = self.forward_model.to_tensor(
+            z_gp,
+            requires_grad=True,
+        ).reshape(-1, 1)
+
+        z_gmm_tensor = self.forward_model.to_tensor(
+            z_gmm,
+            requires_grad=True,
+        ).reshape(-1, 1)
+
+        def likelihood_fn(z_combined):
+            z_gp_tensor = z_combined[self.gp_dim_index]
+            z_gmm_tensor = z_combined[self.gmm_dim_index]
+            return self.log_likelihood(z_gp_tensor, z_gmm_tensor)
+
+        z_combined = torch.cat([z_gp_tensor, z_gmm_tensor], dim=0).flatten()
+
+        likelihood_hessian = torch.autograd.functional.hessian(
+            likelihood_fn,
+            z_combined
+        )
+
+        likelihood_hessian     = likelihood_hessian.detach().cpu().numpy()
+        likelihood_hessian_gp  = likelihood_hessian[self.gp_dim_index, self.gp_dim_index]
+        likelihood_hessian_gmm = likelihood_hessian[self.gmm_dim_index, self.gmm_dim_index]
+        
+        gmm_prior_hessian = self.gmm.log_prior_gmm_hessian(
+            z_gmm_tensor.detach()
+            .cpu()
+            .numpy()
+            .reshape(-1)
+        )
+        gp_prior_hessian = -np.eye(z_gp_tensor.shape[0])
+
+        hessian_gp =  likelihood_hessian_gp  + gp_prior_hessian
+        hessian_gmm = likelihood_hessian_gmm + gmm_prior_hessian
+
+        # assemble a total hessian
+        # cross prior hessian are zeros
+        hessian_total = likelihood_hessian.copy()
+        hessian_total[self.gp_dim_index, self.gp_dim_index] = hessian_gp
+        hessian_total[self.gmm_dim_index, self.gmm_dim_index] = hessian_gmm
+
+        return hessian_gp, hessian_gmm, hessian_total
 
     @staticmethod
     def log_prior_gp_gradient(z_gp):

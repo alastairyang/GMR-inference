@@ -77,6 +77,63 @@ class gmmAugmented:
         grad = np.sum(responsibilities[:, np.newaxis] * component_grads, axis=0)
         
         return grad
+
+    
+    def log_prior_gmm_hessian(self, Eb):
+        """
+        Analytical Hessian of log GMM prior.
+        
+        H[log p(x)] = sum_k r_k(-Sigma_k^{-1} + g_k g_k^T) - (sum_k r_k g_k)(sum_k r_k g_k)^T
+        
+        Parameters:
+        -----------
+        Eb : np.ndarray, shape (n_features,)
+        gmm : trained GMM object
+        
+        Returns:
+        --------
+        hessian : np.ndarray, shape (n_features, n_features)
+        """
+        n_features    = Eb.shape[0]
+        n_components  = self.gmm.n_components
+
+        component_log_probs = np.zeros(n_components)
+        component_grads     = np.zeros((n_components, n_features))
+        cov_invs            = []
+
+        for k in range(n_components):
+            mvn = MVN(mean=self.gmm.means[k],
+                    covariance=self.gmm.covariances[k],
+                    random_state=self.gmm.random_state)
+
+            norm_factor, exponent = mvn.to_norm_factor_and_exponents(Eb)
+            component_log_probs[k] = (np.log(self.gmm.priors[k])
+                                    + np.log(norm_factor)
+                                    + exponent[0])
+
+            cov_inv = np.linalg.inv(self.gmm.covariances[k])
+            cov_invs.append(cov_inv)
+            diff = (Eb - self.gmm.means[k]).reshape(-1, 1)          
+            component_grads[k] = (-cov_inv @ diff).flatten()   
+
+        # Responsibilities via log-sum-exp (same as your gradient function)
+        max_log_prob    = np.max(component_log_probs)
+        responsibilities = np.exp(component_log_probs - max_log_prob)
+        responsibilities /= responsibilities.sum()             
+
+        # Hessian assembly
+        weighted_hess = np.zeros((n_features, n_features))
+        for k in range(n_components):
+            g_k = component_grads[k].reshape(-1, 1)           
+            weighted_hess += responsibilities[k] * (
+                -cov_invs[k] + g_k @ g_k.T                    
+            )
+
+        # Subtract outer product of the total gradient
+        mean_grad = (responsibilities[:, np.newaxis] * component_grads).sum(axis=0)
+        weighted_hess -= np.outer(mean_grad, mean_grad)         
+
+        return weighted_hess
     
     def to_log_probability_density(self, X):
         """

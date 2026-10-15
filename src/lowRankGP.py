@@ -294,7 +294,7 @@ class lowRankGP:
         
         return U_F, S_F, VT_F
 
-    def plot_discrepancy_modes(self):
+    def plot_discrepancy_modes(self, save_path=None):
         import matplotlib.pyplot as plt
 
         # plot every 10 eigenvectors
@@ -306,6 +306,8 @@ class lowRankGP:
                     vmin=-0.03, vmax=0.03)
             plt.title(f"Mode {i}")
             plt.gca().invert_yaxis()
+        if save_path is not None:
+            plt.savefig(save_path)
         plt.show()
 
         return

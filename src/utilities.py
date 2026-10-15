@@ -1,6 +1,7 @@
 import numpy as np
 import os
 import scipy
+import tempfile
 from scipy.ndimage import gaussian_filter
 import xarray as xr
 import scipy.io as sio
@@ -156,6 +157,258 @@ def smooth_variable_gaussian(field, sigma_field_m, xs, ys, n_bins=10):
 
     return np.where(valid & (den > 0), num / den, np.nan)
 
+def low_mean_high_marginal_percentile(samples, low_percentile=5, high_percentile=95):
+    """
+    Compute marginal percentile bounds across all features independently.
+
+    Parameters
+    ----------
+    samples : array, shape (n_samples, n_features)
+        MCMC samples drawn from the posterior.
+    low_percentile : float
+        Lower percentile (default: 5) → lower bound of 90% credible interval.
+    high_percentile : float
+        Upper percentile (default: 95) → upper bound of 90% credible interval.
+
+    Returns
+    -------
+    low_bound : array, shape (n_features,)
+        Marginal low_percentile bound per feature.
+    mean_bound : array, shape (n_features,)
+        Marginal mean per feature.
+    high_bound : array, shape (n_features,)
+        Marginal high_percentile bound per feature.
+    """
+    import torch
+    if isinstance(samples, torch.Tensor):
+        samples = samples.detach().cpu().numpy()
+
+    low_bound = np.percentile(samples, low_percentile, axis=0)
+    mean_bound = np.mean(samples, axis=0)
+    high_bound = np.percentile(samples, high_percentile, axis=0)
+
+    return low_bound, mean_bound, high_bound
+
+def robust_posterior_marginal_mapping(
+    forward_model,
+    samples,
+    temp_path=None,
+    low_percentile=5,
+    high_percentile=95,
+    n_intermediate=200,
+    memory_budget_mb=256,
+):
+    """
+    Compute exact marginal percentiles and means of mapped posterior samples.
+
+    Mapped samples are stored on disk. Statistics are then computed in
+    feature blocks, avoiding loading the complete mapped posterior into RAM.
+
+    Parameters
+    ----------
+    forward_model : callable
+        Maps one latent sample to a real-valued physical array.
+        All mapped arrays must have the same shape.
+    samples : array-like
+        Latent samples, with samples.shape[0] equal to the sample count.
+        Samples are accessed individually, so memory-mapped inputs work.
+    temp_path : str or path-like, optional
+        Parent directory for temporary storage. Defaults to the current
+        working directory.
+    low_percentile, high_percentile : float
+        Marginal percentile bounds, between 0 and 100.
+    n_intermediate : int
+        Maximum number of mapped samples buffered before writing to disk.
+        May be reduced automatically to respect the working-memory budget.
+    memory_budget_mb : float
+        Approximate budget in MiB for mapping buffers and percentile work
+        arrays. Excludes input samples, returned arrays, forward-model
+        memory, and the operating system's disk cache.
+
+    Returns
+    -------
+    low_bound, mean_bound, high_bound : numpy.ndarray
+        Arrays with the same shape as one forward-model output.
+
+    Notes
+    -----
+    Uses float64 intermediate storage.
+
+    Exact percentiles require loading at least one feature across all
+    samples. Raises ValueError if the configured budget is too small for
+    that computation.
+    """
+    n_samples = int(samples.shape[0])
+
+    if n_samples < 1:
+        raise ValueError("samples must contain at least one sample.")
+
+    if not 0 <= low_percentile <= high_percentile <= 100:
+        raise ValueError(
+            "Require 0 <= low_percentile <= high_percentile <= 100."
+        )
+
+    if (
+        not isinstance(n_intermediate, (int, np.integer))
+        or n_intermediate < 1
+    ):
+        raise ValueError("n_intermediate must be a positive integer.")
+
+    if not np.isfinite(memory_budget_mb) or memory_budget_mb <= 0:
+        raise ValueError("memory_budget_mb must be positive and finite.")
+
+    budget_bytes = int(memory_budget_mb * 1024**2)
+    itemsize = np.dtype(np.float64).itemsize
+
+    # Conservative allowance for the loaded block and NumPy's temporary
+    # percentile arrays. This is a working-memory estimate, not an RSS cap.
+    bytes_per_feature = 4 * itemsize * n_samples
+    features_per_block = budget_bytes // bytes_per_feature
+
+    if features_per_block < 1:
+        minimum_mb = bytes_per_feature / 1024**2
+        raise ValueError(
+            "The memory budget is too small for exact percentiles "
+            f"across {n_samples:,} samples. "
+            f"Use memory_budget_mb >= {minimum_mb:.2f}."
+        )
+
+    def to_numpy(value):
+        # Supports NumPy arrays and PyTorch tensors without requiring
+        # a torch import when forward_model returns NumPy arrays.
+        if hasattr(value, "detach"):
+            value = value.detach().cpu().numpy()
+
+        value = np.asarray(value)
+
+        if not np.issubdtype(value.dtype, np.number):
+            raise TypeError("forward_model must return a numeric array.")
+        if np.iscomplexobj(value):
+            raise TypeError("forward_model must return real-valued data.")
+
+        return value
+
+    parent = os.getcwd() if temp_path is None else os.fspath(temp_path)
+    os.makedirs(parent, exist_ok=True)
+
+    disk_samples = None
+
+    with tempfile.TemporaryDirectory(
+        prefix="posterior_mapping_", dir=parent
+    ) as work_dir:
+        try:
+            # Evaluate the first sample to determine output dimensions.
+            first = to_numpy(forward_model(samples[0]))
+            physical_shape = first.shape
+            n_features = first.size
+
+            if n_features == 0:
+                raise ValueError("forward_model returned an empty array.")
+
+            features_per_block = min(features_per_block, n_features)
+
+            # Limit mapping-buffer memory as well as its sample count.
+            buffer_rows = min(
+                n_intermediate,
+                n_samples,
+                max(1, budget_bytes // (4 * itemsize * n_features)),
+            )
+            buffer = np.empty(
+                (buffer_rows, n_features), dtype=np.float64
+            )
+
+            # Feature-major storage makes each feature's full sample
+            # history contiguous on disk.
+            storage_path = os.path.join(work_dir, "physical_samples.npy")
+            disk_samples = np.lib.format.open_memmap(
+                storage_path,
+                mode="w+",
+                dtype=np.float64,
+                shape=(n_features, n_samples),
+            )
+
+            # ----------------------------------------------------------
+            # Pass 1: map samples and write bounded batches to disk.
+            # ----------------------------------------------------------
+            buffered = 0
+            written = 0
+
+            for i in range(n_samples):
+                physical = (
+                    first if i == 0 else to_numpy(forward_model(samples[i]))
+                )
+
+                if physical.shape != physical_shape:
+                    raise ValueError(
+                        f"Output shape changed at sample {i}: "
+                        f"expected {physical_shape}, got {physical.shape}."
+                    )
+
+                buffer[buffered] = physical.reshape(-1)
+                buffered += 1
+                del physical
+
+                if buffered == buffer_rows or i == n_samples - 1:
+                    disk_samples[:, written:written + buffered] = (
+                        buffer[:buffered].T
+                    )
+                    written += buffered
+                    buffered = 0
+
+                if i % 100 == 0:
+                    print(f"Processed {i} / {n_samples} samples.")
+
+            disk_samples.flush()
+
+            # Release mapping-phase buffers before computing statistics.
+            del buffer, first
+            del disk_samples
+            disk_samples = None
+
+            disk_samples = np.load(storage_path, mmap_mode="r")
+
+            # ----------------------------------------------------------
+            # Pass 2: load all samples for only a few features at a time.
+            # ----------------------------------------------------------
+            low_bound = np.empty(n_features, dtype=np.float64)
+            mean_bound = np.empty(n_features, dtype=np.float64)
+            high_bound = np.empty(n_features, dtype=np.float64)
+
+            for start in range(0, n_features, features_per_block):
+                stop = min(start + features_per_block, n_features)
+
+                # Explicit bounded RAM copy, shaped as:
+                # (n_samples, block_features), as required by the helper.
+                block = np.array(
+                    disk_samples[start:stop, :].T,
+                    dtype=np.float64,
+                    order="F",
+                    copy=True,
+                )
+
+                low, mean, high = low_mean_high_marginal_percentile(
+                    block,
+                    low_percentile=low_percentile,
+                    high_percentile=high_percentile,
+                )
+
+                low_bound[start:stop] = low
+                mean_bound[start:stop] = mean
+                high_bound[start:stop] = high
+
+                del block, low, mean, high
+
+            return (
+                low_bound.reshape(physical_shape),
+                mean_bound.reshape(physical_shape),
+                high_bound.reshape(physical_shape),
+            )
+
+        finally:
+            # Release the memory map before temporary-file cleanup.
+            if disk_samples is not None:
+                del disk_samples
+
 # ---------- NOT ACTIVELY USED ----------
 def build_distance_matrix(x, y):
     """
@@ -290,38 +543,6 @@ def low_high_joint_percentile(samples, log_probs, low_percentile=5, high_percent
     low_bound = samples_sorted[idx_low]  
     high_bound = samples_sorted[idx_high]  
     return low_bound, high_bound
-
-def low_mean_high_marginal_percentile(samples, low_percentile=5, high_percentile=95):
-    """
-    Compute marginal percentile bounds across all features independently.
-
-    Parameters
-    ----------
-    samples : array, shape (n_samples, n_features)
-        MCMC samples drawn from the posterior.
-    low_percentile : float
-        Lower percentile (default: 5) → lower bound of 90% credible interval.
-    high_percentile : float
-        Upper percentile (default: 95) → upper bound of 90% credible interval.
-
-    Returns
-    -------
-    low_bound : array, shape (n_features,)
-        Marginal low_percentile bound per feature.
-    mean_bound : array, shape (n_features,)
-        Marginal mean per feature.
-    high_bound : array, shape (n_features,)
-        Marginal high_percentile bound per feature.
-    """
-    import torch
-    if isinstance(samples, torch.Tensor):
-        samples = samples.detach().cpu().numpy()
-
-    low_bound = np.percentile(samples, low_percentile, axis=0)
-    mean_bound = np.mean(samples, axis=0)
-    high_bound = np.percentile(samples, high_percentile, axis=0)
-
-    return low_bound, mean_bound, high_bound
 
 def read_exp(filepath):
     """
