@@ -4,10 +4,10 @@ class posteriorObjective:
     Bridging enthalpyPosterior and scipy.optimize
     """
 
-    def __init__(self, posterior, gp_dimension, gmm_dimension):
+    def __init__(self, posterior):
         self.posterior = posterior
-        self.gp_dimension = gp_dimension
-        self.gmm_dimension = gmm_dimension
+        self.gp_dimension = posterior.gp_dim
+        self.gmm_dimension = posterior.gmm_dim
 
     def unpack(self, theta):
         """

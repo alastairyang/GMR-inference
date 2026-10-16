@@ -29,11 +29,11 @@ class enthalpyPosterior:
         self.gp  = gp  # gaussian process class, "lowRankGP"
         self.config = config
 
-        self.gmm_dim = self.gmm.gmm.means.shape[1]
-        self.gp_dim  = self.gp.n_mode
+        self.gmm_dim   = self.gmm.gmm.means.shape[1]
+        self.gp_dim    = self.gp.n_mode
         self.total_dim = self.gp_dim + self.gmm_dim
         # absolute index to avoid confusion when slicing
-        self.gp_dim_index  = slice(0, self.gp_dim)
+        self.gp_dim_index  = slice(0,           self.gp_dim)
         self.gmm_dim_index = slice(self.gp_dim, self.total_dim)
 
     def thawed_log_likelihood(self, delta_T):
@@ -50,8 +50,6 @@ class enthalpyPosterior:
             )
 
         return -(1.0 / beta) * torch.sum(delta_T * dw)
-
-
 
     def frozen_log_likelihood(self, delta_T):
         beta = self.config.beta
@@ -249,6 +247,25 @@ class enthalpyPosterior:
         hessian_total[self.gmm_dim_index, self.gmm_dim_index] = hessian_gmm
 
         return hessian_gp, hessian_gmm, hessian_total
+
+    def laplace_approx(self, z_gp, z_gmm, n_sample = 1000):
+        """
+        Laplace approximation of the posterior
+        Take samples from the Laplace approximation of the posterior
+
+        """
+        hessian_gp, hessian_gmm, hessian_total = self.hessian(z_gp, z_gmm)
+        neg_inv_hessian_total = -np.linalg.inv(hessian_total)
+
+        # draw samples from the Laplace approximation
+        laplace_samples = np.random.multivariate_normal(
+            mean=np.concatenate([z_gp.reshape(-1), z_gmm.reshape(-1)]),
+            cov=neg_inv_hessian_total,
+            size=n_sample
+        )
+
+        return laplace_samples
+
 
     @staticmethod
     def log_prior_gp_gradient(z_gp):
