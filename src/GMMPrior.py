@@ -1,8 +1,8 @@
-from gmr import MVN, gmm
+from gmr import MVN
 import numpy as np
 import scipy as sp
 
-class gmmAugmented:
+class GMMPrior:
     """
     A wrapper class for a Gaussian Mixture Model (GMM) 
     that provides additional functionality, built on top of 
@@ -184,3 +184,10 @@ class gmmAugmented:
         log_prob = c.squeeze() + np.log(np.sum(np.exp(log_prob_components - c), axis=1))
         
         return log_prob
+
+    def gmm_nll(self, X):
+        """
+        Evaluate the negative log likelihood of validation data X given the GMM model.
+        """
+        nll = np.array([-self.to_log_probability_density(x) for x in X])
+        return nll

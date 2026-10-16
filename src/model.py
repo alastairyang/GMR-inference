@@ -362,59 +362,59 @@ class model:
         self.Y_epsilon = Y_epsilon
         return 
     
-    def load_evidence(self, \
-                      thawed_mask,
-                      thawed_frac_area, 
-                      frozen_mask,
-                      frozen_frac_area,
-                      pmp,
-                      show_plot=True):
-        """
-        Load the basal thermal evidence
-        """
-        # below are within the domain bound
-        self.thawed_mask            = thawed_mask
-        self.thawed_fractional_area = thawed_frac_area
-        self.frozen_mask            = frozen_mask
-        self.frozen_fractional_area = frozen_frac_area
-        # combined mask
-        self.combined_mask = np.logical_or(thawed_mask, frozen_mask)
-        self.combined_frac_area = thawed_frac_area + frozen_frac_area
-        # pmp may be defined beyond domain bound
-        self.pmp                    = pmp
-        pmp_plot = pmp.copy().reshape(self.nx, self.ny)
-        pmp_plot[self.domain_mask == False] = np.nan
-        if show_plot:
-            # visualize both and pmp
-            plt.figure(figsize=(8, 12))
-            plt.subplot(3, 2, 1)
-            plt.imshow(self.frozen_mask.reshape(self.nx, self.ny), cmap='gray')
-            plt.title('Frozen Base Mask')
-            plt.colorbar()
-            plt.gca().invert_yaxis()
-            plt.subplot(3, 2, 2)
-            plt.imshow(self.thawed_mask.reshape(self.nx, self.ny), cmap='gray')
-            plt.title('Thawed Base Mask')
-            plt.colorbar()
-            plt.gca().invert_yaxis()
-            plt.subplot(3, 2, 3)
-            plt.imshow(self.frozen_fractional_area.reshape(self.nx, self.ny), cmap='Blues', alpha=0.5)
-            plt.title('Frozen Fractional Area')
-            plt.colorbar()
-            plt.gca().invert_yaxis()
-            plt.subplot(3, 2, 4)
-            plt.imshow(self.thawed_fractional_area.reshape(self.nx, self.ny), cmap='Reds', alpha=0.5)
-            plt.title('Thawed Fractional Area')
-            plt.colorbar()
-            plt.gca().invert_yaxis()
+    # def load_evidence(self, \
+    #                   thawed_mask,
+    #                   thawed_frac_area, 
+    #                   frozen_mask,
+    #                   frozen_frac_area,
+    #                   pmp,
+    #                   show_plot=True):
+    #     """
+    #     Load the basal thermal evidence
+    #     """
+    #     # below are within the domain bound
+    #     self.thawed_mask            = thawed_mask
+    #     self.thawed_fractional_area = thawed_frac_area
+    #     self.frozen_mask            = frozen_mask
+    #     self.frozen_fractional_area = frozen_frac_area
+    #     # combined mask
+    #     self.combined_mask = np.logical_or(thawed_mask, frozen_mask)
+    #     self.combined_frac_area = thawed_frac_area + frozen_frac_area
+    #     # pmp may be defined beyond domain bound
+    #     self.pmp                    = pmp
+    #     pmp_plot = pmp.copy().reshape(self.nx, self.ny)
+    #     pmp_plot[self.domain_mask == False] = np.nan
+    #     if show_plot:
+    #         # visualize both and pmp
+    #         plt.figure(figsize=(8, 12))
+    #         plt.subplot(3, 2, 1)
+    #         plt.imshow(self.frozen_mask.reshape(self.nx, self.ny), cmap='gray')
+    #         plt.title('Frozen Base Mask')
+    #         plt.colorbar()
+    #         plt.gca().invert_yaxis()
+    #         plt.subplot(3, 2, 2)
+    #         plt.imshow(self.thawed_mask.reshape(self.nx, self.ny), cmap='gray')
+    #         plt.title('Thawed Base Mask')
+    #         plt.colorbar()
+    #         plt.gca().invert_yaxis()
+    #         plt.subplot(3, 2, 3)
+    #         plt.imshow(self.frozen_fractional_area.reshape(self.nx, self.ny), cmap='Blues', alpha=0.5)
+    #         plt.title('Frozen Fractional Area')
+    #         plt.colorbar()
+    #         plt.gca().invert_yaxis()
+    #         plt.subplot(3, 2, 4)
+    #         plt.imshow(self.thawed_fractional_area.reshape(self.nx, self.ny), cmap='Reds', alpha=0.5)
+    #         plt.title('Thawed Fractional Area')
+    #         plt.colorbar()
+    #         plt.gca().invert_yaxis()
 
-            plt.subplot(3, 2, 5)
-            plt.imshow(pmp_plot.reshape(self.nx, self.ny), cmap='hot')
-            plt.title('Pressure Melting Point')
-            plt.colorbar()
-            plt.gca().invert_yaxis()
-            plt.show()
-        return
+    #         plt.subplot(3, 2, 5)
+    #         plt.imshow(pmp_plot.reshape(self.nx, self.ny), cmap='hot')
+    #         plt.title('Pressure Melting Point')
+    #         plt.colorbar()
+    #         plt.gca().invert_yaxis()
+    #         plt.show()
+    #     return
 
     def find_reduction_model_pca(self, n_component_x, n_component_y):
         """ 
@@ -839,23 +839,23 @@ class model:
             plt.show()
         return z_optimal, residual_latent, residual_recon, residual
 
-    def _initialize_discrepancy_basis(self, n_mode, plotting=False):
-        """
-        Initialize the discrepancy basis for the random field.
-        """
-        from src.randomField import discrepancy_basis
+    # def _initialize_discrepancy_basis(self, n_mode, plotting=False):
+    #     """
+    #     Initialize the discrepancy basis for the random field.
+    #     """
+    #     from src.randomField import discrepancy_basis
 
-        U_F, S_F, _ = discrepancy_basis(
-            self.domain_mask,
-            self.delta_x,
-            self.delta_y,
-            n_mode,
-            self.pca_x.components_.T,
-            plotting=plotting
-        )
-        self.U_F = U_F
-        self.S_F = S_F
-        return
+    #     U_F, S_F, _ = discrepancy_basis(
+    #         self.domain_mask,
+    #         self.delta_x,
+    #         self.delta_y,
+    #         n_mode,
+    #         self.pca_x.components_.T,
+    #         plotting=plotting
+    #     )
+    #     self.U_F = U_F
+    #     self.S_F = S_F
+    #     return
         
     
     def compute_MAP(self, n_discrepancy_mode = 100, beta=1, beta_w=0.001, n_iter=20, lr=0.5, show_plot=True, show_trajectory=False):
@@ -1770,7 +1770,7 @@ class model:
             # Plotting: five columns: observed Y, True X, predicted X, error (RMSE), uncertainty (stddev)
             plt.subplot(n_test_samples_plot, 5, count * 5 + 1)
             plt.imshow(obs_Y, cmap='RdBu', vmin=-2, vmax=2)
-            plt.title(rf'Observed (Test Sample {i+1})', fontsize=title_fontsize)
+            plt.title(rf'Observed {y_name} (Test Sample {i+1})', fontsize=title_fontsize)
             plt.colorbar()
             # invert y axis
             plt.gca().invert_yaxis()
@@ -1779,13 +1779,13 @@ class model:
 
             plt.subplot(n_test_samples_plot, 5, count * 5 + 2)
             plt.imshow(x_test_img, cmap='RdBu', vmin=-2, vmax=2)
-            plt.title(rf'True (Test Sample {i+1})', fontsize=title_fontsize)
+            plt.title(rf'True {x_name} (Test Sample {i+1})', fontsize=title_fontsize)
             plt.colorbar()
             plt.gca().invert_yaxis()
 
             plt.subplot(n_test_samples_plot, 5, count * 5 + 3)
             plt.imshow(x_pred_img, cmap='RdBu', vmin=-2, vmax=2)
-            plt.title(rf'Predicted (Test Sample {i+1})', fontsize=title_fontsize)
+            plt.title(rf'Predicted {x_name} (Test Sample {i+1})', fontsize=title_fontsize)
             plt.colorbar()
             plt.gca().invert_yaxis()
             

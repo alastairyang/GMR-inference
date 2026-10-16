@@ -3,7 +3,7 @@ import torch
 import scipy.sparse as sparse
 import scipy.sparse.linalg as spla
 
-class lowRankGP:
+class lowRankGPPrior:
     """
     A class representing a low-rank Gaussian Process (GP) model
     built on graph laplacian. The basis are formed in the null space
