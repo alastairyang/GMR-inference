@@ -1,10 +1,16 @@
 from dataclasses import dataclass
+
 import numpy as np
 import torch
-from src.observationOperator import enthalpy_to_delta_temperature_operator
-from src.observationOperator import gp_latent_enthalpy_operator, pca_latent_enthalpy_operator
-from src.ice import enthalpy_to_water_fraction 
-from src.utilities import reverse_standardize
+
+from observationOperator import (
+    enthalpy_to_delta_temperature_operator,
+    gp_latent_enthalpy_operator,
+    pca_latent_enthalpy_operator,
+)
+from ice import enthalpy_to_water_fraction
+from utilities import reverse_standardize
+
 
 def as_torch(x, *, dtype=torch.float64, device=None):
     """

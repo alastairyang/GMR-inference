@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: gmr-inference
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.9
+Requires-Dist: cartopy>=0.23.0
+Requires-Dist: gmr>=2.0.3
+Requires-Dist: ipykernel>=6.31.0
+Requires-Dist: ipympl>=0.10.0
+Requires-Dist: ipywidgets>=8.1.8
+Requires-Dist: matplotlib>=3.9.4
+Requires-Dist: netcdf4>=1.7.2
+Requires-Dist: numpy>=2.0.2
+Requires-Dist: pandas>=2.3.3
+Requires-Dist: pyro-ppl>=1.9.1
+Requires-Dist: rasterio>=1.4.3
+Requires-Dist: scikit-learn>=1.6.1
+Requires-Dist: scipy>=1.13.1
+Requires-Dist: torch>=2.8.0
+Requires-Dist: xarray>=2024.7.0

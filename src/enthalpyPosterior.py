@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from src.utilities import shape_check
+from utilities import shape_check
 import scipy as sp
 from gmr import MVN
 

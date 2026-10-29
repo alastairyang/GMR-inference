@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from src.probability import to_log_probability_density
+from probability import to_log_probability_density
 def bayesian_information_criterion(model, X_validate, Y_validate, n):
     """   
     Compute the Bayesian information criterion for GMM. Models with lower BIC are generally preferred. 

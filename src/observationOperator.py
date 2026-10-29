@@ -1,8 +1,8 @@
 import torch
 import numpy as np
 import torch.nn.functional as F
-from src.ice import enthalpy_to_temperature, enthalpy_to_water_fraction
-from src.utilities import reverse_standardize
+from ice import enthalpy_to_temperature, enthalpy_to_water_fraction
+from utilities import reverse_standardize
 
 # this script defines the observation operator
 # which operators on the simulation output (enthalpy or basal temperature)

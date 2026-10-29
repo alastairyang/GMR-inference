@@ -1,11 +1,11 @@
 from tabnanny import verbose
 import numpy as np
 from gmr import MVN
-from src.ice import enthalpy_to_temperature, enthalpy_to_water_fraction
-from src.utilities import reverse_standardize, shape_check
-from src.observationOperator import latent_waterfraction_operator_enthalpy
-from src.observationOperator import enthalpy_to_delta_temperature_operator
-from src.observationOperator import gp_latent_enthalpy_operator, pca_latent_enthalpy_operator
+from ice import enthalpy_to_temperature, enthalpy_to_water_fraction
+from utilities import reverse_standardize, shape_check
+from observationOperator import latent_waterfraction_operator_enthalpy
+from observationOperator import enthalpy_to_delta_temperature_operator
+from observationOperator import gp_latent_enthalpy_operator, pca_latent_enthalpy_operator
 # from src.observationOperator import latent_operator_enthalpy 
 # import pytorch for AD
 import torch
