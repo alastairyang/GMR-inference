@@ -9,7 +9,6 @@ from observationOperator import (
     pca_latent_enthalpy_operator,
 )
 from ice import enthalpy_to_water_fraction
-from utilities import reverse_standardize
 
 
 def as_torch(x, *, dtype=torch.float64, device=None):
@@ -26,10 +25,7 @@ class latentEnthalpyModel:
         self,
         pca,
         gp,
-        Eb_mean,
-        Eb_std,
-        Eb_epsilon,
-        method,
+        scaler,
         Tpmp,
         *,
         dtype=torch.float64,
@@ -39,18 +35,28 @@ class latentEnthalpyModel:
         self.device = device
         self.gp  = gp  # lowRankGP class
         self.pca = pca # sklearn PCA model
-        self.Eb_mean    = as_torch(Eb_mean, dtype=self.dtype, device=self.device)
-        self.Eb_std     = as_torch(Eb_std, dtype=self.dtype, device=self.device)
-        self.Eb_epsilon = as_torch(Eb_epsilon, dtype=self.dtype, device=self.device)
-        self.Tpmp       = as_torch(Tpmp, dtype=self.dtype, device=self.device).reshape(-1, 1)
-        if method not in ["relaxation", "standard"]:
-            raise ValueError(f"Unsupported method: {method}")
-        else:
-            self.method     = method
 
-        self.pca_eigenvec        = as_torch(self.pca.components_.T, dtype=self.dtype, device=self.device)
-        self.gp_eigenvec         = as_torch(self.gp.eigenvec, dtype=self.dtype, device=self.device)
-        self.gp_singular_val_mtx = as_torch(self.gp.singular_val_mtx, dtype=self.dtype, device=self.device)
+        self.Tpmp   = as_torch(
+            Tpmp, 
+            dtype=self.dtype, 
+            device=self.device).reshape(-1, 1)
+        self.scaler = scaler
+
+        self.pca_eigenvec        = as_torch(
+            self.pca.components_.T, 
+            dtype=self.dtype, 
+            device=self.device
+        )
+        self.gp_eigenvec         = as_torch(
+            self.gp.eigenvec, 
+            dtype=self.dtype, 
+            device=self.device
+        )
+        self.gp_singular_val_mtx = as_torch(
+            self.gp.singular_val_mtx, 
+            dtype=self.dtype, 
+            device=self.device
+        )
 
     def to_tensor(self, x, *, requires_grad=False):
         x = as_torch(x, dtype=self.dtype, device=self.device)
@@ -92,19 +98,18 @@ class latentEnthalpyModel:
         enthalpy_gmm = self.decode_gmm(z_gmm)
 
         enthalpy_total = enthalpy_gp + enthalpy_gmm
-
-        # reverse standardize
-        Eb_mean_column = self.Eb_mean.reshape(-1, 1)
-        Eb_std_column  = self.Eb_std.reshape(-1, 1)
-
-        enthalpy_total_physical = reverse_standardize(
-            enthalpy_total,
-            Eb_mean_column,
-            Eb_std_column,
-            method=self.method,
-            epsilon=self.Eb_epsilon,
+        mean = torch.as_tensor(
+            self.scaler.mean_,
+            dtype=enthalpy_total.dtype,
+            device=enthalpy_total.device,
+        )
+        scale = torch.as_tensor(
+            self.scaler.scale_,
+            dtype=enthalpy_total.dtype,
+            device=enthalpy_total.device,
         )
 
+        enthalpy_total_physical = enthalpy_total * scale[:, None] + mean[:, None]
         return enthalpy_total_physical
 
     def physical_state(self, z_gp, z_gmm):
@@ -182,6 +187,7 @@ class BasalEvidence:
                 device=device,
             ).reshape(-1, 1),
         )
+
 
 @dataclass
 class PosteriorConfig:

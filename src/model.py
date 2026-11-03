@@ -8,7 +8,7 @@ from src.ice import enthalpy_to_temperature
 from gmr.utils import check_random_state
 from gmr import GMM
 from scipy.optimize import minimize, Bounds
-
+from sklearn.utils import check_random_state
 import pyro.infer.mcmc as mcmc
 import pyro.ops.stats as stats
 

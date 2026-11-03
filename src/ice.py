@@ -19,7 +19,10 @@ def enthalpy_to_temperature(Eb, Tpmp, Cp=2093.0, T0=223.15, istorch=True):
     Tb = (Eb + Cp*T0)/Cp if Eb <= Cp*(Tpmp-T0)
 
     """
-
+    # shape check for safety to avoid broadcasting
+    if Eb.shape != Tpmp.shape:
+        raise ValueError("Eb and Tpmp must have the same shape")
+    
     if istorch:
         Tb = torch.where(Eb > Cp*(Tpmp-T0), Tpmp, (Eb + Cp*T0)/Cp)
     else: # numpy
