@@ -17,6 +17,7 @@ dependencies = [
     "rasterio>=1.4.3",
     "scikit-learn>=1.6.1",
     "scipy>=1.13.1",
+    "scores>=1.2.0",
     "torch>=2.8.0",
     "xarray>=2024.7.0",
 ]
