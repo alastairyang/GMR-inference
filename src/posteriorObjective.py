@@ -40,8 +40,8 @@ class posteriorObjective:
 
         return -self.posterior.packed_gradient(z_gp, z_gmm)
 
-    def value_and_gradient(self, theta):
-        return self.value(theta), self.gradient(theta)
+    # def value_and_gradient(self, theta):
+    #     return self.value(theta), self.gradient(theta)
 
     @staticmethod
     def finite_difference_gradient(objective, theta, epsilon=1e-6):
@@ -63,3 +63,25 @@ class posteriorObjective:
             ) / (2.0 * epsilon)
 
         return gradient
+
+class PosteriorObjectiveGMMOnly:
+    def __init__(self, posterior):
+        self.posterior = posterior
+
+    def value(self, theta):
+        value = self.posterior.log_prob(theta)
+        return -float(value.detach().cpu())
+
+    def gradient(self, theta):
+        return -self.posterior.packed_gradient(theta)
+
+class PosteriorObjectiveGPOnly:
+    def __init__(self, posterior):
+        self.posterior = posterior
+
+    def value(self, theta):
+        value = self.posterior.log_prob(theta)
+        return -float(value.detach().cpu())
+
+    def gradient(self, theta):
+        return -self.posterior.packed_gradient(theta)

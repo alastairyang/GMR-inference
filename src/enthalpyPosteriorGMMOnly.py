@@ -1,0 +1,222 @@
+import torch
+import numpy as np
+import scipy as sp
+
+class enthalpyPosteriorGMMOnly:
+
+    """
+    Bayesian inference over Gaussian Process and Gaussian Mixture Model
+    latent representations. 
+
+    This class contains the essential methods for computing log likelihood, prior, and
+    posterior (As well as the gradients) of the latent representations.
+
+    """
+
+    def __init__(
+            self,
+            forward_model,
+            evidence,
+            gmm,
+            config,
+    ):
+        self.forward_model = forward_model
+        self.evidence = evidence
+        self.gmm = gmm # gaussian mixture class, "gmmAugmented"
+        self.config = config
+
+        self.gmm_dim   = self.gmm.gmm.means.shape[1]
+        self.total_dim = self.gmm_dim
+        # absolute index to avoid confusion when slicing
+        self.gmm_dim_index = slice(0, self.total_dim)
+
+    def thawed_log_likelihood(self, delta_T):
+        beta = self.config.beta
+        dw = self.evidence.thawed_fraction
+
+        delta_T = delta_T.squeeze(-1)
+        dw = dw.squeeze(-1)
+
+        if delta_T.shape != dw.shape:
+            raise ValueError(
+                f"delta_T and thawed_fraction must have identical shapes; "
+                f"got {tuple(delta_T.shape)} and {tuple(dw.shape)}."
+            )
+
+        return -(1.0 / beta) * torch.sum(delta_T * dw)
+
+    def frozen_log_likelihood(self, delta_T):
+        beta = self.config.beta
+        eps = self.config.eps
+        df = self.evidence.frozen_fraction
+
+        delta_T = delta_T.squeeze(-1)
+        df = df.squeeze(-1)
+
+        if delta_T.shape != df.shape:
+            raise ValueError(
+                f"delta_T and frozen_fraction must have identical shapes; "
+                f"got {tuple(delta_T.shape)} and {tuple(df.shape)}."
+            )
+
+        value = (
+            1.0
+            + (eps - 1.0)
+            * torch.exp(-delta_T / beta)
+        )
+
+        return torch.sum(torch.log(value) * df)
+
+    def water_fraction_log_likelihood(self, water_fraction):
+        beta_w = self.config.beta_w
+        eps = self.config.eps
+        threshold = self.config.water_fraction_threshold
+
+        scaled = (water_fraction - threshold) / beta_w
+
+        # sigmoid(-scaled) avoids explicitly computing
+        # 1 / (1 + exp(scaled)).
+        probability = torch.sigmoid(-scaled)
+
+        return torch.sum(torch.log(probability + eps))
+
+    def log_likelihood(self, z_gmm):
+        state = self.forward_model.physical_state(
+            z_gmm,
+        )
+
+        return (
+            self.thawed_log_likelihood(state["delta_T"])
+            + self.frozen_log_likelihood(state["delta_T"])
+            + self.water_fraction_log_likelihood(
+                state["water_fraction"]
+            )
+        )
+
+    def gmm_log_prior_numpy(self, z_gmm):
+        z_gmm_np = (
+            z_gmm.detach().cpu().numpy().reshape(1, -1)
+        )
+
+        value = self.gmm.to_log_probability_density(
+            z_gmm_np,
+        )
+        return float(np.asarray(value).reshape(-1)[0])
+
+    def log_prob(self, z_gmm, *, verbose=False):
+        z_gmm = self.forward_model.to_tensor(z_gmm)
+
+        ll = self.log_likelihood(z_gmm)
+        gmm_prior = self.gmm_log_prior_numpy(z_gmm)
+
+        total = ll + gmm_prior
+        if verbose:
+            print(f"log_likelihood: {ll}")
+            print(f"gmm_log_prior: {gmm_prior}")
+            print(f"total: {total}")
+        return total
+
+    # ---------------- GRADIENT ----------------
+    def gradient(self, z_gmm):
+
+        z_gmm_tensor = self.forward_model.to_tensor(
+            z_gmm,
+            requires_grad=True,
+        ).reshape(-1, 1)
+
+        likelihood = self.log_likelihood(
+            z_gmm_tensor,
+        )
+
+        likelihood_grad_gmm = torch.autograd.grad(
+            likelihood,
+            (z_gmm_tensor),
+        )[0]
+
+        likelihood_grad_gmm = (
+            likelihood_grad_gmm.detach()
+            .cpu()
+            .numpy()
+            .reshape(-1)
+        )
+
+        gmm_prior_grad = self.gmm.log_prior_gmm_gradient(
+            z_gmm_tensor.detach()
+            .cpu()
+            .numpy()
+            .reshape(-1)
+        )
+
+    
+        return likelihood_grad_gmm + gmm_prior_grad
+
+
+    def packed_gradient(self, z_gmm):
+        grad_gmm = self.gradient(z_gmm)
+
+        return np.asarray(grad_gmm).reshape(-1)
+
+    def hessian(self, z_gmm):
+        """
+        Compute the Hessian of the log posterior with respect to z_gp and z_gmm.
+
+
+        """
+
+        z_gmm_tensor = self.forward_model.to_tensor(
+            z_gmm,
+            requires_grad=True,
+        ).reshape(-1, 1)
+
+        def likelihood_fn(z_combined):
+            z_gmm_tensor = z_combined[self.gmm_dim_index]
+            return self.log_likelihood(z_gmm_tensor)
+
+        z_combined = z_gmm_tensor.flatten()
+
+        likelihood_hessian = torch.autograd.functional.hessian(
+            likelihood_fn,
+            z_combined
+        )
+
+        likelihood_hessian     = likelihood_hessian.detach().cpu().numpy()
+        likelihood_hessian_gmm = likelihood_hessian[self.gmm_dim_index, self.gmm_dim_index]
+        
+        gmm_prior_hessian = self.gmm.log_prior_gmm_hessian(
+            z_gmm_tensor.detach()
+            .cpu()
+            .numpy()
+            .reshape(-1)
+        )
+
+        hessian_gmm = likelihood_hessian_gmm + gmm_prior_hessian
+
+        # assemble a total hessian
+        # cross prior hessian are zeros
+        hessian_total = likelihood_hessian.copy()
+        hessian_total[self.gmm_dim_index, self.gmm_dim_index] = hessian_gmm
+
+        return hessian_gmm, hessian_total
+
+    def laplace_approx(self, z_gmm, n_sample = 1000):
+        """
+        Laplace approximation of the posterior
+        Take samples from the Laplace approximation of the posterior
+
+        """
+        hessian_gmm, hessian_total = self.hessian(z_gmm)
+        neg_inv_hessian_total = -np.linalg.inv(hessian_total)
+
+        # draw samples from the Laplace approximation
+        laplace_samples = np.random.multivariate_normal(
+            mean=z_gmm.reshape(-1),
+            cov=neg_inv_hessian_total,
+            size=n_sample
+        )
+
+        return laplace_samples
+
+
+    @staticmethod
+    def log_prior_gp_gradient(z_gp):
+        return -z_gp
