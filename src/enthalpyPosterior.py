@@ -135,12 +135,12 @@ class enthalpyPosterior:
 
         z_gp_tensor = self.forward_model.to_tensor(
             z_gp,
-            requires_grad=self.z_gp_optimize_flag,
+            requires_grad=True,
         ).reshape(-1, 1)
 
         z_gmm_tensor = self.forward_model.to_tensor(
             z_gmm,
-            requires_grad=self.z_gmm_optimize_flag,
+            requires_grad=True,
         ).reshape(-1, 1)
 
         likelihood = self.log_likelihood(
@@ -206,12 +206,12 @@ class enthalpyPosterior:
         """
         z_gp_tensor = self.forward_model.to_tensor(
             z_gp,
-            requires_grad=self.z_gp_optimize_flag,
+            requires_grad=True,
         ).reshape(-1, 1)
 
         z_gmm_tensor = self.forward_model.to_tensor(
             z_gmm,
-            requires_grad=self.z_gmm_optimize_flag,
+            requires_grad=True,
         ).reshape(-1, 1)
 
         def likelihood_fn(z_combined):

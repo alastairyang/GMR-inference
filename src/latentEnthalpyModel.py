@@ -36,6 +36,9 @@ class latentEnthalpyModel:
         self.gp  = gp  # lowRankGP class
         self.pca = pca # sklearn PCA model
 
+        self.ref_enthalpy = 2093 * (273.15 - 223.15) # enthalpy at pmp (atm pressure)
+
+
         self.Tpmp   = as_torch(
             Tpmp, 
             dtype=self.dtype, 
@@ -109,6 +112,7 @@ class latentEnthalpyModel:
             device=enthalpy_gmm.device,
         )
         enthalpy_gmm_physical = enthalpy_gmm * e_scale[:, None] + e_mean[:, None]
+        # enthalpy_gp_shifted = enthalpy_gp * e_scale.mean() + self.ref_enthalpy
         enthalpy_gp_shifted = enthalpy_gp
 
         enthalpy_total = enthalpy_gp_shifted + enthalpy_gmm_physical
@@ -159,6 +163,8 @@ class latentEnthalpyModelGMMOnly:
         self.dtype  = dtype
         self.device = device
         self.pca = pca # sklearn PCA model
+
+        self.ref_enthalpy = 2093 * (273.15 - 223.15) # enthalpy at pmp (atm pressure)
 
         self.Tpmp   = as_torch(
             Tpmp, 
@@ -258,6 +264,9 @@ class latentEnthalpyModelGPOnly:
         self.device = device
         self.gp  = gp  # lowRankGP class
 
+        self.ref_enthalpy = 2093 * (273.15 - 223.15) # enthalpy at pmp (atm pressure)
+
+
         self.Tpmp   = as_torch(
             Tpmp, 
             dtype=self.dtype, 
@@ -308,7 +317,8 @@ class latentEnthalpyModelGPOnly:
         e_scale = torch.as_tensor(
             self.scaler.scale_,
         ).mean()
-        enthalpy_gp_scaled = enthalpy_gp * e_scale + e_mean
+        
+        enthalpy_gp_scaled = enthalpy_gp * e_scale + self.ref_enthalpy
 
         return enthalpy_gp_scaled
 
