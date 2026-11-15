@@ -294,18 +294,27 @@ class lowRankGPPrior:
         
         return U_F, S_F, VT_F
 
-    def plot_discrepancy_modes(self, save_path=None):
+    def plot_discrepancy_modes(self, modes = None, save_path=None):
         import matplotlib.pyplot as plt
-
+        nx = self.domain_mask.shape[0]
+        ny = self.domain_mask.shape[1]
         # plot every 10 eigenvectors
-        plt.figure(figsize=(25, 3))
-        for i in range(0, self.left_singular_vectors.shape[1], 10):
-            plt.subplot(1, self.left_singular_vectors.shape[1] // 10, i // 10 + 1)
-            plt.imshow(self.left_singular_vectors[:, i].reshape(self.domain_mask.shape[1], self.domain_mask.shape[0]), 
+        plt.figure(figsize=(18, 8))
+        if modes is None:
+            modes = range(0, self.left_singular_vectors.shape[1], 10)
+        for idx, i in enumerate(modes):
+            
+            vec = self.left_singular_vectors[:, i].flatten()
+            vec = np.where(self.domain_mask.flatten(), vec, np.nan)
+            vec = vec.reshape(ny, nx)
+            plt.subplot(2, len(modes) // 2 + len(modes) % 2, idx + 1)
+            plt.imshow(vec, 
                     cmap='RdBu_r',
                     vmin=-0.03, vmax=0.03)
             plt.title(f"Mode {i}")
             plt.gca().invert_yaxis()
+            # remove box and ticks
+            plt.axis('off')
         if save_path is not None:
             plt.savefig(save_path)
         plt.show()

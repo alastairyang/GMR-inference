@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from sklearn.cross_decomposition import PLSRegression
 from sklearn.utils import check_random_state
 from gmr import GMM
 
@@ -87,7 +88,7 @@ class Simulation:
 
         return 
 
-    def show_data(self, n_samples_to_plot=5):
+    def show_data(self, n_samples_to_plot=5, savepath=None):
         colormap = 'RdBu'
 
         random_indices = np.random.choice(
@@ -122,10 +123,13 @@ class Simulation:
         sm = plt.cm.ScalarMappable(cmap=colormap, norm=norm)
         # add label
         cbar_ax.set_ylabel('Normalized Value', rotation=270, labelpad=15)
+        cbar_ax.tick_params(labelsize=16)
         sm.set_array([])
         plt.colorbar(sm, cax=cbar_ax)
 
         plt.tight_layout()
+        if savepath is not None:
+            plt.savefig(savepath, bbox_inches='tight', pad_inches=0.1)
 
 
     def find_reduction_model_pca(self, n_latent, show_scree=False):
@@ -166,6 +170,38 @@ class Simulation:
             plt.show()
 
         return
+
+    def show_mode(self, modes = None, savepath = None):
+        """
+        Show principal components.
+
+        Parameters
+        ----------
+        modes: list of int, optional
+            The indices of the principal components to show. If None, show every 10th component.
+        savepath: str, optional
+            Path to save the figure. If None, the figure is not saved.
+        """
+        if modes is None:
+            modes = range(0, self.ndim_reduced[0], 10)
+
+        for i_field in range(0, self.n_fields):
+            plt.figure(figsize=(18, 8))
+            for idx, i in enumerate(modes):
+                vec = self.pca_x[i_field].components_[i].flatten()
+                vec = np.where(self.domain_mask.flatten(), vec, np.nan)
+                plt.subplot(2, len(modes) // 2 + len(modes) % 2, idx + 1)
+                plt.imshow(vec.reshape(self.nx, self.ny), 
+                           cmap='RdBu_r',
+                           vmin=-0.02, vmax=0.02,
+                           origin='lower'
+                           )
+                plt.title(f"Mode {i}")
+                plt.axis('off')
+            if savepath is not None:
+                savepath = savepath.replace(".png", f"_field{i_field}.png")
+                plt.savefig(savepath, bbox_inches='tight', pad_inches=0.1)
+            plt.show()
 
     def split_data(self, train_ratio=0.8, validation_ratio=0.1, test_ratio=0.1):
         """ 
@@ -212,7 +248,7 @@ class Simulation:
 
         return
 
-    def gmm_prior(self, n_gaussians):
+    def fit_gmm_prior(self, n_gaussians):
         """
         Fit a Gaussian Mixture Model (GMM) to the reduced X data as a prior.
 
@@ -240,6 +276,102 @@ class Simulation:
             gmms.append(gmm)
         self.gmms = gmms
         return
+    def fit_joint_gmm(self, n_gaussians, index=None):
+        """
+        Fit a Gaussian Mixture Model (GMM) to the reduced X data (joint of multiple fields)
+ 
+
+        Parameters
+        ----------
+        n_gaussians: list of int
+            The number of Gaussian components in the mixture for each field.
+        index: nested list of int, optional
+            The indices of the joint fields to fit the GMM for. If None, fit for all fields.
+        """
+
+        if index is not None:
+            if len(n_gaussians) != len(index):
+                raise ValueError("Length of n_gaussians must match the length of index.")
+        
+        gmms = []
+        print("Fitting GMMs for each field")
+        if index is None:
+            index = list(range(self.n_fields))
+        for idx, n_gaussian in zip(index, n_gaussians):
+            print(f"--------- Field {idx}, number of Gaussians: {n_gaussian}")
+            gmm = GMM(
+                n_components=n_gaussian, 
+                random_state=self.random_state,
+                )
+            train_data = np.concatenate([self.X_train[j] for j in idx], axis=1)
+            gmm.from_samples(
+                train_data, 
+                R_diff=1e-6,
+                )
+            gmms.append(gmm)
+        self.joint_gmms = gmms
+        return
+
+    def fit_pls(self, x_idx, y_idx, n_components=2, scale=True):
+        """
+        Fit PLS regression between the PCA coefficients of two fields.
+
+        Parameters
+        ----------
+        x_idx : int
+            Index of the known field (predictor).
+        y_idx : int
+            Index of the unknown field (target).
+        n_components : int, default=2
+            Number of PLS latent components. This is independent of the
+            number of PCA components retained for either field.
+        scale : bool, default=True
+            Whether to scale predictor and target PCA coefficients to unit
+            variance before fitting. PLS always centers the data.
+
+        Returns
+        -------
+        pls : sklearn.cross_decomposition.PLSRegression
+            Fitted model. Predictions are in the target field's PCA space.
+        """
+        if not hasattr(self, "X_train"):
+            raise RuntimeError(
+                "Call find_reduction_model_pca() and split_data() before fit_pls()."
+            )
+
+        for name, idx in (("x_idx", x_idx), ("y_idx", y_idx)):
+            if not isinstance(idx, (int, np.integer)):
+                raise TypeError(f"{name} must be an integer.")
+            if not 0 <= idx < self.n_fields:
+                raise ValueError(
+                    f"{name} must be between 0 and {self.n_fields - 1}."
+                )
+
+        X = self.X_train[x_idx]
+        Y = self.X_train[y_idx]
+
+        if X.shape[0] < 2:
+            raise ValueError("PLS regression requires at least two training samples.")
+
+        max_components = min(X.shape[0], X.shape[1])
+        if not isinstance(n_components, (int, np.integer)):
+            raise TypeError("n_components must be an integer.")
+        if not 1 <= n_components <= max_components:
+            raise ValueError(
+                f"n_components must be between 1 and {max_components}."
+            )
+
+        pls = PLSRegression(
+            n_components=n_components,
+            scale=scale,
+        )
+        pls.fit(X, Y)
+
+        self.pls_model = pls
+        self.pls_x_idx = x_idx
+        self.pls_y_idx = y_idx
+
+        return pls
 
     def _input_list_check(self, X):
         """
@@ -284,86 +416,3 @@ class Simulation:
             plt.close(fig_tmp)
 
         return segments
-
-    # def load_split_data(
-    #         self, 
-    #         X_train, 
-    #         Y_train,
-    #         X_validation, 
-    #         Y_validation,
-    #         X_test, 
-    #         Y_test
-    #     ):
-    #     """ 
-    #     Load the pre-split data into the model. This is an alternative to the split_data method.
-        
-    #     Parameters
-    #     ----------
-    #     X_train: ndarray of shape (n_samples_train, n_features)
-    #         The training data in the original space.
-    #     Y_train: ndarray of shape (n_samples_train, n_targets)
-    #         The training target data in the original space.
-    #     X_validation: ndarray of shape (n_samples_validation, n_features)
-    #         The validation data in the original space.
-    #     Y_validation: ndarray of shape (n_samples_validation, n_targets)
-    #         The validation target data in the original space.
-    #     X_test: ndarray of shape (n_samples_test, n_features)
-    #         The test data in the original space.
-    #     Y_test: ndarray of shape (n_samples_test, n_targets)
-    #         The test target data in the original space.
-    #     """
-    #     # Apply fitted PCA on the whole data set to 
-    #     # the training, validation, and test data separately        
-    #     def flatten(X):
-    #         return X.reshape((self.nx * self.ny * self.n_channel, -1)).T
-
-    #     # ✅ DO NOT refit — pca_x and pca_y are already fitted in find_reduction_model_pca
-    #     # Just transform each split
-    #     X_reduced_train      = self.pca_x.transform(flatten(X_train))
-    #     Y_reduced_train      = self.pca_y.transform(flatten(Y_train))
-
-    #     if Y_validation.shape[3] > 0:
-    #         X_reduced_validation = self.pca_x.transform(flatten(X_validation))
-    #         Y_reduced_validation = self.pca_y.transform(flatten(Y_validation))
-    #     else:
-    #         X_reduced_validation = np.empty((0, self.pca_x.n_components_))
-    #         Y_reduced_validation = np.empty((0, self.pca_y.n_components_))
-
-    #     X_reduced_test = self.pca_x.transform(flatten(X_test))
-    #     Y_reduced_test = self.pca_y.transform(flatten(Y_test))
-
-    #     # Stack (Y first, then X — matching your index convention)
-    #     self.XY_train      = np.hstack((Y_reduced_train,      X_reduced_train))
-    #     self.XY_validation = np.hstack((Y_reduced_validation, X_reduced_validation))
-    #     self.XY_test       = np.hstack((Y_reduced_test,       X_reduced_test))
-
-    #     self.n_samples_train      = self.XY_train.shape[0]
-    #     self.n_samples_validation = self.XY_validation.shape[0]
-    #     self.n_samples_test       = self.XY_test.shape[0]
-
-    #     print("Shape of XY_train:", self.XY_train.shape)
-    #     print("Shape of XY_validation:", self.XY_validation.shape)
-    #     print("Shape of XY_test:", self.XY_test.shape)
-    #     return
-
-    # def load_standardization_data(self, X_mean, X_std, Y_mean, Y_std, X_epsilon=None, Y_epsilon=None):
-    #     """
-    #     Load the standardization data (mean, std) from the simulation ensemble
-    #       -> Going between standardized space and the physical space
-    #     """
-    #     # shape check: the mean and std should all be flatten
-    #     if X_mean.shape != (self.nx * self.ny * self.n_channel,):
-    #         raise ValueError(f"X_mean should have shape {(self.nx * self.ny * self.n_channel,)}, but got {X_mean.shape}")
-    #     if X_std.shape != (self.nx * self.ny * self.n_channel,):
-    #         raise ValueError(f"X_std should have shape {(self.nx * self.ny * self.n_channel,)}, but got {X_std.shape}")
-    #     if Y_mean.shape != (self.nx * self.ny * self.n_channel,):
-    #         raise ValueError(f"Y_mean should have shape {(self.nx * self.ny * self.n_channel,)}, but got {Y_mean.shape}")
-    #     if Y_std.shape != (self.nx * self.ny * self.n_channel,):
-    #         raise ValueError(f"Y_std should have shape {(self.nx * self.ny * self.n_channel,)}, but got {Y_std.shape}")
-    #     self.X_mean = X_mean
-    #     self.X_std = X_std
-    #     self.Y_mean = Y_mean
-    #     self.Y_std = Y_std
-    #     self.X_epsilon = X_epsilon
-    #     self.Y_epsilon = Y_epsilon
-    #     return 
