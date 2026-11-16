@@ -1,16 +1,25 @@
 import numpy as np
 
 class RegressPosterior:
+    """
+    Class for performing regression on the posterior samples using Gaussian mixture models.
+    
+    Author: Donglai Yang
+    Contact: dyang379@gatech.edu
+    """
+    
     def __init__(
             self, 
             simulation, 
-            posterior_samples,
+            forward_model,
+            posterior,
             predictor_index,
             response_index,
             ):
         self.simulation = simulation # the Simulation class object
-        self.posterior_samples = posterior_samples
         self.predictor_index = predictor_index # the index of the predictor variable (posterior sample index)
+        self.posterior = posterior # the posterior class (enthalpyPosterior)
+        self.forward_model = forward_model # the forward model class (latentEnthalpyModel)
         self.response_index = response_index # the index of the response variable
         self.joint_md = None
     def form_joint_distribution(self, n_gaussian):
@@ -22,19 +31,6 @@ class RegressPosterior:
 
         self._regression_indices()
         return
-
-    def _regression_indices(self):
-        ndim_predictor = self.simulation.ndim_reduced[self.predictor_index]
-        ndim_response  = self.simulation.ndim_reduced[self.response_index]
-
-        # get the linear index for the dimension.
-        # needs to be consistent with field_index order (which puts predictor first, then response)
-        self.condition_index = list(range(ndim_predictor))
-        self.target_index = list(range(ndim_predictor, ndim_predictor + ndim_response))
-        print("Condition index:", self.condition_index)
-        print("Target index:", self.target_index)
-        return
-
     def test_regression(
             self, 
             n_sample_plot=5, 
@@ -114,7 +110,7 @@ class RegressPosterior:
             plt.imshow(obs_Y, cmap='RdBu', vmin=-2, vmax=2, 
                        extent=extent_km,
                        origin="lower")
-            plt.title(rf'Observed {x_name}' + "\n" + f'(Sample {i+1})', fontsize=title_fontsize)
+            plt.title(rf'Observed {y_name}' + "\n" + f'(Sample {i+1})', fontsize=title_fontsize)
             plt.colorbar()
             
             plt.subplot(n_test_samples_plot, 5, count * 5 + 2)
@@ -258,4 +254,204 @@ class RegressPosterior:
         # }
         return
 
+    def regress_posterior(
+            self, 
+            posterior_samples,
+            n_conditional_samples=100,
+            random_state=0,
+            num_sample_save=0,
+            max_working_mb=2048
+        ):
+        """
+        Perform Gaussian Mixture regression on all the latent posterior samples. 
+        This will enough projecting on to the new latent space defined
+        by the simulations, which may be lower dimensional than the original space used
+        in the Bayesian state estimation. 
+        """
+        sims = self.simulation
 
+        sim_ndim = sims.pca_x[self.predictor_index].n_components
+        if posterior_samples.shape[1] < sim_ndim:
+            raise ValueError(
+                "Posterior samples have fewer dimensions than the simulation latent space."
+            )
+
+        posterior_sample_newpc = self._project_to_sim_latent(posterior_samples)
+
+        z = np.asarray(posterior_sample_newpc)
+
+        if z.ndim != 2 or z.shape[0] == 0:
+            raise ValueError("Expected nonempty enthalpy coefficients of shape (N, M).")
+        if z.shape[1] != len(self.condition_index):
+            raise ValueError("Enthalpy PC count does not match conditioning indices.")
+
+        if (
+            not isinstance(n_conditional_samples, (int, np.integer))
+            or n_conditional_samples < 1
+        ):
+            raise ValueError("n_conditional_samples must be a positive integer.")
+
+        if (
+            not isinstance(num_sample_save, (int, np.integer))
+            or num_sample_save < 0
+        ):
+            raise ValueError("num_sample_save must be a nonnegative integer.")
+
+        # for the response variable
+        pca = sims.pca_x[self.response_index]
+        scaler = sims.scaling_models[self.response_index]
+        n_pcs, n_pixels = pca.components_.shape
+
+        if n_pixels != sims.nx * sims.ny or scaler.n_features_in_ != n_pixels:
+            raise ValueError("PCA, scaler, and grid dimensions do not match.")
+
+        # Calculate the REAL ensemble size before checking memory.
+        n_draws = z.shape[0] * n_conditional_samples
+        n_saved = min(num_sample_save, n_draws)
+
+        # ------  Budget includes coefficients, output maps, saved fields -------
+        budget = int(max_working_mb * 1024**2)
+
+        base_bytes = 8 * (
+            n_draws * n_pcs
+            + (5 + n_saved) * n_pixels
+        )
+
+        # Conservative allowance for reconstructed blocks and temporaries.
+        bytes_per_pixel = 8 * (5 * n_draws + n_pcs)
+        available_bytes = int(0.8 * budget) - base_bytes
+
+        chunk_size = min(
+            n_pixels,
+            2048,
+            max(0, available_bytes // bytes_per_pixel),
+        )
+
+        if chunk_size < 1:
+            raise MemoryError(
+                "Estimated working memory exceeds the budget. "
+                "Reduce sample counts or increase max_working_mb."
+            )
+
+        print(
+            f"{n_draws:,} draws; "
+            f"{chunk_size} pixels per reconstruction block"
+        )
+        # ---------------------------------------------------------------------
+
+
+        # Allocate only after passing the memory check.
+        rng = np.random.default_rng(random_state)
+        save_indices = rng.choice(n_draws, size=n_saved, replace=False)
+
+        coefficients = np.empty((n_draws, n_pcs))
+        saved_samples = np.empty((n_saved, n_pixels))
+
+        # Multiple conditional GHF draws for EVERY enthalpy sample.
+        for i, enthalpy_sample in enumerate(z):
+            conditional = sims.joint_gmms[0].condition(
+                self.condition_index,
+                enthalpy_sample,
+            )
+            draws = np.asarray(conditional.sample(n_conditional_samples))
+
+            if draws.shape != (n_conditional_samples, n_pcs):
+                raise ValueError("Conditional GMM output does not match GHF PCA.")
+
+            start = i * n_conditional_samples
+            coefficients[start:start + n_conditional_samples] = draws
+
+        # Match PCA.inverse_transform if whitening was used.
+        if getattr(pca, "whiten", False):
+            coefficients *= np.sqrt(pca.explained_variance_)[None, :]
+
+        results = {
+            key: np.empty(n_pixels)
+            for key in ("mean", "std", "p05", "p95", "interval_width")
+        }
+
+        for start in range(0, n_pixels, chunk_size):
+            stop = min(start + chunk_size, n_pixels)
+            sl = slice(start, stop)
+
+            # Blockwise PCA inverse transform.
+            block = coefficients @ pca.components_[:, sl]
+            block += pca.mean_[sl]
+
+            # Equivalent to scaler.inverse_transform, applied blockwise.
+            if scaler.with_std:
+                block *= scaler.scale_[sl]
+            if scaler.with_mean:
+                block += scaler.mean_[sl]
+
+            # Save physical-unit realizations before quantile modifies block.
+            if n_saved:
+                saved_samples[:, sl] = block[save_indices, :]
+
+            results["mean"][sl] = block.mean(axis=0)
+            results["std"][sl] = block.std(axis=0)
+
+            q05, q95 = np.quantile(
+                block,
+                [0.05, 0.95],
+                axis=0,
+                overwrite_input=True,
+            )
+            results["p05"][sl] = q05
+            results["p95"][sl] = q95
+            results["interval_width"][sl] = q95 - q05
+
+            del block, q05, q95
+
+        # Return only AFTER all blocks have been processed.
+        output = {
+            key: values.reshape(sims.nx, sims.ny)
+            for key, values in results.items()
+        }
+        output["samples"] = saved_samples.reshape(n_saved, sims.nx, sims.ny)
+        output["n_samples_saved"] = n_saved
+        output["n_samples_drawn"] = n_draws
+
+        return output
+
+    def _project_to_sim_latent(self, posterior_samples):
+        """
+        Project posterior samples of PMM-PCA data onto the simulation latent space. This is 
+        necessary since the simulation may have reconstructed a new PC subspace
+        for GMR purposes (usually a lower subspace since it's a joint distribution 
+        of two variables).
+
+        *** Fow now we ignore the GP prior
+        """
+        def decode_gmm_samples(z_gmm):
+            n_sample = z_gmm.shape[0]
+            samples = []
+            for i in range(n_sample):
+                sample = z_gmm[i,:].reshape(-1, 1)
+                samples.append(self.forward_model.decode_gmm(sample))
+            return np.array(samples).squeeze()
+        
+        z_gmm = posterior_samples[:, self.posterior.gmm_dim_index]
+        z_gmm = z_gmm.reshape(z_gmm.shape[0], -1)
+        enthalpy_gmm = decode_gmm_samples(z_gmm)
+
+        enthalpy_gmm = np.asarray(enthalpy_gmm).reshape(z_gmm.shape[0], -1)
+
+        # Shape: (n_posterior_samples, n_enthalpy_PCs)
+        enthalpy_gmm_projected = self.simulation.pca_x[
+            self.predictor_index].transform(enthalpy_gmm)
+
+        return enthalpy_gmm_projected
+
+
+    def _regression_indices(self):
+        ndim_predictor = self.simulation.ndim_reduced[self.predictor_index]
+        ndim_response  = self.simulation.ndim_reduced[self.response_index]
+
+        # get the linear index for the dimension.
+        # needs to be consistent with field_index order (which puts predictor first, then response)
+        self.condition_index = list(range(ndim_predictor))
+        self.target_index = list(range(ndim_predictor, ndim_predictor + ndim_response))
+        print("Condition index:", self.condition_index)
+        print("Target index:", self.target_index)
+        return
