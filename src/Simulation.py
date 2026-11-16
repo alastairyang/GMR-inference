@@ -276,7 +276,7 @@ class Simulation:
             gmms.append(gmm)
         self.gmms = gmms
         return
-    def fit_joint_gmm(self, n_gaussians, index=None):
+    def fit_joint_gmm(self, n_gaussians, index):
         """
         Fit a Gaussian Mixture Model (GMM) to the reduced X data (joint of multiple fields)
  
@@ -309,8 +309,8 @@ class Simulation:
                 R_diff=1e-6,
                 )
             gmms.append(gmm)
-        self.joint_gmms = gmms
-        return
+        
+        return gmms
 
     def fit_pls(self, x_idx, y_idx, n_components=2, scale=True):
         """
