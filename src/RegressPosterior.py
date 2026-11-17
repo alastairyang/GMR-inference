@@ -413,6 +413,95 @@ class RegressPosterior:
         output["n_samples_drawn"] = n_draws
 
         return output
+    def plot_predictions(
+        self,
+        prediction,
+        field_name="GHF",
+        units=None,
+        save_path=None,
+        value_limits=None,
+    ):
+        """Plot response variable mean, pointwise interval bounds, and interval width."""
+        import matplotlib.pyplot as plt
+
+        extent_km = [x / 1e3 for x in self.simulation.extent]
+
+        mean = prediction["mean"]
+        width = prediction["interval_width"]
+        p05 = prediction["p05"]
+        p95 = prediction["p95"]
+
+        if value_limits is None:
+            vmin = min(p05.min(), mean.min(), p95.min())
+            vmax = max(p05.max(), mean.max(), p95.max())
+        else:
+            vmin, vmax = value_limits
+
+        colorbar_label = (
+            f"{field_name} ({units})" if units else field_name
+        )
+
+        panels = [
+            (mean, f"{field_name}: posterior mean"),
+        ]
+
+        figsize = 5 * (len(panels) + 1)
+        fig, axes = plt.subplots(
+            1, len(panels)+1,
+            figsize=(figsize, 5),
+            constrained_layout=True,
+        )
+
+        for ax, (field, title) in zip(axes[:2], panels):
+            # apply simulation mask
+            field = np.where(self.simulation.domain_mask, field, np.nan)
+            image = ax.imshow(
+                field * 1e3,
+                origin="lower",
+                cmap="Reds",
+                vmin=vmin,
+                vmax=vmax,
+                extent=extent_km,
+            )
+            ax.set_title(title)
+            ax.set_xlabel("X (km)")
+            ax.set_ylabel("Y (km)")
+            # colorbar
+            fig.colorbar(
+                image,
+                ax=ax,
+                shrink=0.85,
+                label=colorbar_label,
+            )
+        # fig.colorbar(
+        #     image,
+        #     ax=list(axes[:2]),
+        #     shrink=0.85,
+        #     label=colorbar_label,
+        # )
+        width = np.where(self.simulation.domain_mask, width, np.nan)
+        width_image = axes[1].imshow(
+            width * 1e3,
+            origin="lower",
+            cmap="magma",
+            vmin=0,
+            vmax=20,
+            extent=extent_km,
+        )
+        axes[1].set_title("90% interval width: P95 − P05")
+        axes[1].set_xlabel("X (km)")
+        axes[1].set_ylabel("Y (km)")
+
+        fig.colorbar(
+            width_image,
+            ax=axes[1],
+            shrink=0.85,
+            label=colorbar_label,
+        )
+        if save_path is not None:
+            plt.savefig(save_path)
+        plt.show()
+        return 
 
     def _project_to_sim_latent(self, posterior_samples):
         """
