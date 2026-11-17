@@ -36,8 +36,6 @@ class RegressPosterior:
             n_sample_plot=5, 
             n_sample_uq = 200, 
             savepath=None,
-            y_name='Predictor', 
-            x_name='Response'
         ):
         """    
         Perform Gaussian mixture regression on TEST set
@@ -104,6 +102,10 @@ class RegressPosterior:
             x_pred_img = np.where(sims.domain_mask, x_pred_img, np.nan)
             x_uq_std = np.where(sims.domain_mask, x_uq_std, np.nan)
             abs_error_img = np.where(sims.domain_mask, abs_error_img, np.nan)
+
+            # get the variable name from simulation.labels
+            x_name = sims.labels[self.response_index]
+            y_name = sims.labels[self.predictor_index]
 
             # Plotting: five columns: observed Y, True X, predicted X, error (RMSE), uncertainty (stddev)
             plt.subplot(n_test_samples_plot, 5, count * 5 + 1)
@@ -526,7 +528,6 @@ class RegressPosterior:
 
         enthalpy_gmm = np.asarray(enthalpy_gmm).reshape(z_gmm.shape[0], -1)
 
-        # Shape: (n_posterior_samples, n_enthalpy_PCs)
         enthalpy_gmm_projected = self.simulation.pca_x[
             self.predictor_index].transform(enthalpy_gmm)
 
