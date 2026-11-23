@@ -4,9 +4,12 @@ OLDimportanceSampling
 OLDpriorCorrection
 OLDrunValidation
 OperatorRegression
+RegressPosterior
 Simulation
 amortization
 enthalpyPosterior
+enthalpyPosteriorGMMOnly
+enthalpyPosteriorGPOnly
 hamiltonianMonteCarlo
 ice
 iceThermalNumericalSolve

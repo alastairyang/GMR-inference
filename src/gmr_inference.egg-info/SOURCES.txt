@@ -5,9 +5,12 @@ src/OLDimportanceSampling.py
 src/OLDpriorCorrection.py
 src/OLDrunValidation.py
 src/OperatorRegression.py
+src/RegressPosterior.py
 src/Simulation.py
 src/amortization.py
 src/enthalpyPosterior.py
+src/enthalpyPosteriorGMMOnly.py
+src/enthalpyPosteriorGPOnly.py
 src/hamiltonianMonteCarlo.py
 src/ice.py
 src/iceThermalNumericalSolve.py

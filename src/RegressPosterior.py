@@ -351,7 +351,7 @@ class RegressPosterior:
 
         # Multiple conditional GHF draws for EVERY enthalpy sample.
         for i, enthalpy_sample in enumerate(z):
-            conditional = sims.joint_gmms[0].condition(
+            conditional = self.joint_md[0].condition(
                 self.condition_index,
                 enthalpy_sample,
             )

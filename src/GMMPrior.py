@@ -10,6 +10,7 @@ class GMMPrior:
     """
     def __init__(self, gmm):
         self.gmm = gmm
+        self.n_dim = self.gmm.means.shape[1]
 
     def log_prior_gmm_gradient(self, Eb):
         """   
