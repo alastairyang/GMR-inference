@@ -271,19 +271,20 @@ class RegressPosterior:
         in the Bayesian state estimation. 
         """
         sims = self.simulation
-
-        sim_ndim = sims.pca_x[self.predictor_index].n_components
-        if posterior_samples.shape[1] < sim_ndim:
+        predictor_nsample = posterior_samples.shape[0]
+        predictor_ndim    = posterior_samples.shape[1]
+        print(f"Predictor samples: {predictor_nsample} x {predictor_ndim}")
+        if predictor_ndim != sims.ndim_ori:
             raise ValueError(
-                "Posterior samples have fewer dimensions than the simulation latent space."
+                "Posterior samples dimensionality does not match the original simulation latent space."
             )
+        # data has to be z-score 
+        
 
         posterior_sample_newpc = self._project_to_sim_latent(posterior_samples)
 
         z = np.asarray(posterior_sample_newpc)
 
-        if z.ndim != 2 or z.shape[0] == 0:
-            raise ValueError("Expected nonempty enthalpy coefficients of shape (N, M).")
         if z.shape[1] != len(self.condition_index):
             raise ValueError("Enthalpy PC count does not match conditioning indices.")
 
@@ -458,7 +459,7 @@ class RegressPosterior:
             # apply simulation mask
             field = np.where(self.simulation.domain_mask, field, np.nan)
             image = ax.imshow(
-                field * 1e3,
+                field,
                 origin="lower",
                 cmap="Reds",
                 vmin=vmin,
@@ -483,11 +484,9 @@ class RegressPosterior:
         # )
         width = np.where(self.simulation.domain_mask, width, np.nan)
         width_image = axes[1].imshow(
-            width * 1e3,
+            width,
             origin="lower",
             cmap="magma",
-            vmin=0,
-            vmax=20,
             extent=extent_km,
         )
         axes[1].set_title("90% interval width: P95 − P05")

@@ -30,7 +30,7 @@ def bayesian_information_criterion(model, X_validate, Y_validate, n):
     print("k*ln(n):", kln, " - 2*L:", neg2L, "BIC:", BIC)
     return BIC, kln, neg2L
 
-def basal_enthalpy_crps(
+def ensemble_crps(
     posterior_samples,
     ground_truth,
     domain_mask,
@@ -38,7 +38,8 @@ def basal_enthalpy_crps(
     chunk_size=512,
 ):
     """
-    Compute pointwise CRPS using scores.probability.crps_cdf.
+    Compute pointwise CRPS using scores.probability.crps_cdf for an ensemble of samples.
+    A chunked evaluation is performed to handle large datasets efficiently.
 
     Parameters
     ----------

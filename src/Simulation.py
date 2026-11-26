@@ -182,6 +182,10 @@ class Simulation:
         savepath: str, optional
             Path to save the figure. If None, the figure is not saved.
         """
+        from matplotlib.cm import ScalarMappable
+        from matplotlib.colors import Normalize
+        sm = ScalarMappable(norm=Normalize(vmin=-1, vmax=1), cmap='RdBu_r')
+        
         if modes is None:
             modes = range(0, self.ndim_reduced[0], 10)
 
@@ -198,6 +202,16 @@ class Simulation:
                            )
                 plt.title(f"Mode {i}")
                 plt.axis('off')
+
+            # add a color bar to the right of the figure
+            cbar = plt.colorbar(sm, 
+                                ax=plt.gcf().get_axes(), 
+                                orientation='vertical', 
+                                fraction=0.02, pad=0.06)
+            cbar.set_label('Mode Amplitude', fontsize=15)
+            # only show -1, 0, 1 ticks
+            cbar.set_ticks([-1, 0, 1])
+            
             if savepath is not None:
                 savepath = savepath.replace(".png", f"_field{i_field}.png")
                 plt.savefig(savepath, bbox_inches='tight', pad_inches=0.1)

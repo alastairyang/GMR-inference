@@ -296,6 +296,10 @@ class lowRankGPPrior:
 
     def plot_discrepancy_modes(self, modes = None, save_path=None):
         import matplotlib.pyplot as plt
+        from matplotlib.cm import ScalarMappable
+        from matplotlib.colors import Normalize
+        sm = ScalarMappable(norm=Normalize(vmin=-1, vmax=1), cmap='RdBu_r')
+        
         nx = self.domain_mask.shape[0]
         ny = self.domain_mask.shape[1]
         # plot every 10 eigenvectors
@@ -315,6 +319,12 @@ class lowRankGPPrior:
             plt.gca().invert_yaxis()
             # remove box and ticks
             plt.axis('off')
+        cbar = plt.colorbar(sm, 
+                            ax=plt.gcf().get_axes(), 
+                            orientation='vertical', 
+                            fraction=0.02, pad=0.06)
+        cbar.set_label('Mode Amplitude', fontsize=15)
+        cbar.set_ticks([-1, 0, 1])
         if save_path is not None:
             plt.savefig(save_path)
         plt.show()
